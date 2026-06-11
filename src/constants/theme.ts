@@ -1,0 +1,25 @@
+export const theme = {
+  background: '#0A0A0A',
+  card: '#1A1A1A',
+  cardBorder: '#2A2A2A',
+  accent: '#3B82F6',
+  accentMuted: '#1E3A5F',
+  text: '#FFFFFF',
+  textMuted: '#9CA3AF',
+  danger: '#EF4444',
+  success: '#22C55E',
+  warning: '#F59E0B',
+  spacing: {
+    xs: 4,
+    sm: 8,
+    md: 16,
+    lg: 24,
+    xl: 32,
+  },
+  radius: {
+    sm: 8,
+    md: 12,
+    lg: 16,
+    full: 999,
+  },
+} as const;
