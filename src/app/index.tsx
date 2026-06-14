@@ -55,7 +55,7 @@ export default function ProjectListScreen() {
   return (
     <SafeAreaView style={styles.container}>
       <View style={styles.header}>
-        <Text style={styles.title}>Progression</Text>
+        <Text style={styles.title}>Projects</Text>
         <Text style={styles.subtitle}>Track visual progress over time.</Text>
         <Text style={styles.privacy}>Your photos stay on this device.</Text>
       </View>
