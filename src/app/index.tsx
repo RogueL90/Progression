@@ -2,7 +2,9 @@ import { useFocusEffect, useRouter } from 'expo-router';
 import { useCallback, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   FlatList,
+  Modal,
   StyleSheet,
   Text,
   View,
@@ -10,12 +12,16 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { EmptyState } from '@/components/EmptyState';
+import { ImportPreviewCard } from '@/components/ImportPreviewCard';
 import { PrimaryButton } from '@/components/PrimaryButton';
 import { ProjectCard } from '@/components/ProjectCard';
 import { theme } from '@/constants/theme';
+import { importProjectBackup, validateBackupZip } from '@/data/backupService';
 import { getAllProjects } from '@/data/projectStorage';
 import { getStatsForProject } from '@/data/stats';
+import type { BackupManifest } from '@/types/backup';
 import type { Project } from '@/types/project';
+import { pickBackupZipFile } from '@/utils/documentPicker';
 
 type ProjectListItem = Project & {
   totalPhotos: number;
@@ -27,6 +33,12 @@ export default function ProjectListScreen() {
   const router = useRouter();
   const [items, setItems] = useState<ProjectListItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [importing, setImporting] = useState(false);
+  const [validating, setValidating] = useState(false);
+  const [previewVisible, setPreviewVisible] = useState(false);
+  const [pendingZipUri, setPendingZipUri] = useState<string | null>(null);
+  const [pendingManifest, setPendingManifest] = useState<BackupManifest | null>(null);
+  const [pendingPhotoCount, setPendingPhotoCount] = useState(0);
 
   const loadItems = useCallback(async () => {
     setLoading(true);
@@ -52,12 +64,80 @@ export default function ProjectListScreen() {
     }, [loadItems])
   );
 
+  const resetImportPreview = () => {
+    setPreviewVisible(false);
+    setPendingZipUri(null);
+    setPendingManifest(null);
+    setPendingPhotoCount(0);
+  };
+
+  const handleImportBackup = async () => {
+    try {
+      const zipUri = await pickBackupZipFile();
+      if (!zipUri) return;
+
+      setValidating(true);
+      const validation = await validateBackupZip(zipUri);
+      setValidating(false);
+
+      if (!validation.valid || !validation.manifest) {
+        Alert.alert(
+          'Invalid backup',
+          validation.errors[0] ?? 'This does not look like a valid Progression backup.'
+        );
+        return;
+      }
+
+      setPendingZipUri(zipUri);
+      setPendingManifest(validation.manifest);
+      setPendingPhotoCount(validation.photoCount ?? validation.manifest.photos.length);
+      setPreviewVisible(true);
+    } catch {
+      setValidating(false);
+      Alert.alert('Import failed', 'Could not import this backup.');
+    }
+  };
+
+  const confirmImport = async () => {
+    if (!pendingZipUri) return;
+
+    try {
+      setImporting(true);
+      const importedProject = await importProjectBackup(pendingZipUri);
+      resetImportPreview();
+      await loadItems();
+      Alert.alert('Import complete', 'Project imported successfully.');
+      router.push(`/projects/${importedProject.id}`);
+    } catch (error) {
+      Alert.alert(
+        'Import failed',
+        error instanceof Error ? error.message : 'Could not import this backup.'
+      );
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  const importButton = (
+    <PrimaryButton
+      title={validating ? 'Validating...' : 'Import Backup'}
+      variant="secondary"
+      onPress={handleImportBackup}
+      loading={validating}
+      disabled={validating || importing}
+      style={styles.importButton}
+    />
+  );
+
   return (
     <SafeAreaView style={styles.container}>
       <View style={styles.header}>
         <Text style={styles.title}>Projects</Text>
         <Text style={styles.subtitle}>Track visual progress over time.</Text>
         <Text style={styles.privacy}>Your photos stay on this device.</Text>
+        <Text style={styles.backupNote}>
+          Your progress is yours. Export a backup anytime and restore it later.
+        </Text>
       </View>
 
       {loading ? (
@@ -65,12 +145,15 @@ export default function ProjectListScreen() {
           <ActivityIndicator color={theme.accent} size="large" />
         </View>
       ) : items.length === 0 ? (
-        <EmptyState
-          title="No projects yet"
-          message="Create your first progress project to start tracking change over time."
-          actionLabel="New Project"
-          onAction={() => router.push('/projects/new')}
-        />
+        <View style={styles.emptyContainer}>
+          <EmptyState
+            title="No projects yet"
+            message="Create your first progress project to start tracking change over time."
+            actionLabel="New Project"
+            onAction={() => router.push('/projects/new')}
+          />
+          {importButton}
+        </View>
       ) : (
         <FlatList
           style={styles.list}
@@ -87,14 +170,53 @@ export default function ProjectListScreen() {
             />
           )}
           ListFooterComponent={
-            <PrimaryButton
-              title="New Project"
-              onPress={() => router.push('/projects/new')}
-              style={styles.newButton}
-            />
+            <View style={styles.footerButtons}>
+              <PrimaryButton
+                title="New Project"
+                onPress={() => router.push('/projects/new')}
+              />
+              {importButton}
+            </View>
           }
         />
       )}
+
+      <Modal
+        visible={previewVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={resetImportPreview}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Import Backup</Text>
+            <Text style={styles.modalDescription}>
+              Restore a Progression backup as a new project.
+            </Text>
+            {pendingManifest && (
+              <ImportPreviewCard
+                manifest={pendingManifest}
+                photoCount={pendingPhotoCount}
+              />
+            )}
+            <View style={styles.modalActions}>
+              <PrimaryButton
+                title="Cancel"
+                variant="secondary"
+                onPress={resetImportPreview}
+                style={styles.modalButton}
+              />
+              <PrimaryButton
+                title={importing ? 'Importing...' : 'Import as New Project'}
+                onPress={confirmImport}
+                loading={importing}
+                disabled={importing}
+                style={styles.modalButton}
+              />
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -123,6 +245,12 @@ const styles = StyleSheet.create({
     color: theme.textMuted,
     fontSize: 14,
   },
+  backupNote: {
+    color: theme.textMuted,
+    fontSize: 13,
+    marginTop: theme.spacing.sm,
+    lineHeight: 18,
+  },
   list: {
     flex: 1,
   },
@@ -135,7 +263,46 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  newButton: {
+  emptyContainer: {
+    flex: 1,
+    paddingHorizontal: theme.spacing.md,
+  },
+  footerButtons: {
+    gap: theme.spacing.sm,
     marginTop: theme.spacing.sm,
+  },
+  importButton: {
+    marginTop: theme.spacing.sm,
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    justifyContent: 'center',
+    padding: theme.spacing.lg,
+  },
+  modalContent: {
+    backgroundColor: theme.background,
+    borderRadius: theme.radius.lg,
+    padding: theme.spacing.lg,
+    gap: theme.spacing.md,
+    borderWidth: 1,
+    borderColor: theme.cardBorder,
+  },
+  modalTitle: {
+    color: theme.text,
+    fontSize: 20,
+    fontWeight: '700',
+  },
+  modalDescription: {
+    color: theme.textMuted,
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  modalActions: {
+    flexDirection: 'row',
+    gap: theme.spacing.sm,
+  },
+  modalButton: {
+    flex: 1,
   },
 });

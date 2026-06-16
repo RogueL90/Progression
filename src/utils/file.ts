@@ -3,6 +3,11 @@ import { Directory, File, Paths } from 'expo-file-system';
 export const STORAGE_ROOT = 'progression';
 export const PROJECTS_DIR = 'projects';
 export const PHOTOS_DIR = 'photos';
+export const EXPORTS_DIR = 'exports';
+
+function getExportDirectory(): Directory {
+  return new Directory(Paths.cache, STORAGE_ROOT, EXPORTS_DIR);
+}
 
 function getProjectDirectory(projectId: string): Directory {
   return new Directory(Paths.document, STORAGE_ROOT, PROJECTS_DIR, projectId);
@@ -79,4 +84,25 @@ export async function fileExists(uri: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+export async function ensureExportDirectory(): Promise<string> {
+  const exportDir = getExportDirectory();
+  if (!exportDir.exists) {
+    exportDir.create({ intermediates: true, idempotent: true });
+  }
+  return exportDir.uri;
+}
+
+export async function readFileBytes(uri: string): Promise<Uint8Array> {
+  return new File(uri).bytes();
+}
+
+export async function writeFileBytes(uri: string, bytes: Uint8Array): Promise<void> {
+  const file = new File(uri);
+  if (file.exists) {
+    file.delete();
+  }
+  file.create();
+  file.write(bytes);
 }

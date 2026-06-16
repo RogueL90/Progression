@@ -7,4 +7,5 @@ export type Project = {
   createdAt: string;
   updatedAt: string;
   coverPhotoUri?: string;
+  lastBackedUpAt?: string;
 };

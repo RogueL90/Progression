@@ -10,15 +10,18 @@ import {
 } from 'react-native';
 
 import { PrimaryButton } from '@/components/PrimaryButton';
+import { BackupSection } from '@/components/BackupSection';
 import { StatCard } from '@/components/StatCard';
 import { getProjectTypeLabel } from '@/constants/projectTypes';
 import { theme } from '@/constants/theme';
+import { exportProjectBackup } from '@/data/backupService';
 import { deleteProject } from '@/data/projectStorage';
 import { getStatsForProject } from '@/data/stats';
 import { useProject } from '@/hooks/useProject';
 import { useTodayPhoto } from '@/hooks/useTodayPhoto';
 import type { PhotoStats } from '@/types/photo';
 import { formatDisplayDate } from '@/utils/date';
+import { shareBackupFile } from '@/utils/share';
 
 export default function ProjectDashboardScreen() {
   const { projectId } = useLocalSearchParams<{ projectId: string }>();
@@ -29,6 +32,23 @@ export default function ProjectDashboardScreen() {
   const [stats, setStats] = useState<PhotoStats | null>(null);
   const [statsLoading, setStatsLoading] = useState(true);
   const [deleting, setDeleting] = useState(false);
+  const [backingUp, setBackingUp] = useState(false);
+
+  const runBackup = useCallback(async () => {
+    if (!projectId) return;
+
+    try {
+      setBackingUp(true);
+      const zipUri = await exportProjectBackup(projectId);
+      await shareBackupFile(zipUri);
+      await refreshProject();
+      Alert.alert('Backup created', 'Backup created. Save it somewhere safe.');
+    } catch {
+      Alert.alert('Backup failed', 'Could not create backup. Please try again.');
+    } finally {
+      setBackingUp(false);
+    }
+  }, [projectId, refreshProject]);
 
   const refreshStats = useCallback(async () => {
     if (!projectId) return;
@@ -51,11 +71,17 @@ export default function ProjectDashboardScreen() {
 
     Alert.alert(
       'Delete this project?',
-      'This will delete the project and all of its photos from this device.',
+      'This will delete the project and all of its photos from this device.\n\nConsider creating a backup first if you want to keep a copy.',
       [
         { text: 'Cancel', style: 'cancel' },
         {
-          text: 'Delete',
+          text: 'Backup First',
+          onPress: () => {
+            void runBackup();
+          },
+        },
+        {
+          text: 'Delete Project',
           style: 'destructive',
           onPress: async () => {
             setDeleting(true);
@@ -151,6 +177,8 @@ export default function ProjectDashboardScreen() {
           </View>
         </View>
       )}
+
+      <BackupSection project={project} backingUp={backingUp} onBackup={runBackup} />
 
       <PrimaryButton
         title="Delete Project"

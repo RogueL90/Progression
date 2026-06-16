@@ -156,3 +156,9 @@ export async function touchProjectAfterPhotoSave(
   const { updateProject } = await import('@/data/projectStorage');
   await updateProject(projectId, { coverPhotoUri });
 }
+
+export async function appendImportedPhotos(photos: ProgressPhoto[]): Promise<void> {
+  if (photos.length === 0) return;
+  const existing = await loadPhotosRaw();
+  await persistPhotosDirect([...existing, ...photos]);
+}
