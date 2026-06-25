@@ -1,6 +1,9 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
-
 import type { ProgressPhoto } from '@/types/photo';
+import { createMetadataSnapshot } from '@/data/metadataSnapshotService';
+import {
+  readPhotosRaw,
+  writePhotosRaw,
+} from '@/data/rawMetadataStorage';
 import { sortPhotosByDateDesc } from '@/utils/date';
 import {
   copyPhotoToProjectStorage,
@@ -10,25 +13,6 @@ import {
 
 export const PHOTOS_STORAGE_KEY = 'progression:photos';
 export const LEGACY_PHOTOS_STORAGE_KEY = 'face-progress:photos';
-
-async function loadPhotosRaw(): Promise<ProgressPhoto[]> {
-  const raw = await AsyncStorage.getItem(PHOTOS_STORAGE_KEY);
-  if (!raw) return [];
-  try {
-    const parsed = JSON.parse(raw) as ProgressPhoto[];
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
-}
-
-export async function persistPhotosDirect(photos: ProgressPhoto[]): Promise<void> {
-  await AsyncStorage.setItem(PHOTOS_STORAGE_KEY, JSON.stringify(photos));
-}
-
-async function persistPhotos(photos: ProgressPhoto[]): Promise<void> {
-  await persistPhotosDirect(photos);
-}
 
 function generateId(date: string): string {
   return `${date}-${Date.now()}`;
@@ -44,51 +28,16 @@ async function pruneOrphans(photos: ProgressPhoto[]): Promise<ProgressPhoto[]> {
   }
 
   if (valid.length !== photos.length) {
-    await persistPhotos(valid);
+    await writePhotosRaw(valid);
   }
 
   return valid;
 }
 
-export async function getAllPhotos(): Promise<ProgressPhoto[]> {
-  const photos = await pruneOrphans(await loadPhotosRaw());
-  return sortPhotosByDateDesc(photos);
-}
-
-export async function getPhotosForProject(projectId: string): Promise<ProgressPhoto[]> {
-  const photos = await getAllPhotos();
-  return photos.filter((p) => p.projectId === projectId);
-}
-
-export async function getPhotoById(photoId: string): Promise<ProgressPhoto | null> {
-  const photos = await getAllPhotos();
-  const photo = photos.find((p) => p.id === photoId) ?? null;
-  if (!photo) return null;
-  if (!(await fileExists(photo.uri))) {
-    await deletePhoto(photo.id);
-    return null;
-  }
-  return photo;
-}
-
-export async function getPhotoByDate(
-  projectId: string,
-  date: string
-): Promise<ProgressPhoto | null> {
-  const photos = await getPhotosForProject(projectId);
-  const photo = photos.find((p) => p.date === date) ?? null;
-  if (!photo) return null;
-  if (!(await fileExists(photo.uri))) {
-    await deletePhoto(photo.id);
-    return null;
-  }
-  return photo;
-}
-
-export async function savePhoto(photo: ProgressPhoto): Promise<void> {
-  const photos = await loadPhotosRaw();
+async function savePhotoWithoutSnapshot(photo: ProgressPhoto): Promise<void> {
+  const photos = await readPhotosRaw();
   const index = photos.findIndex(
-    (p) => p.projectId === photo.projectId && p.date === photo.date
+    (item) => item.projectId === photo.projectId && item.date === photo.date
   );
 
   if (index >= 0) {
@@ -101,27 +50,96 @@ export async function savePhoto(photo: ProgressPhoto): Promise<void> {
     photos.push(photo);
   }
 
-  await persistPhotos(photos);
+  await writePhotosRaw(photos);
 }
 
-export async function deletePhoto(photoId: string): Promise<void> {
-  const photos = await loadPhotosRaw();
-  const photo = photos.find((p) => p.id === photoId);
+export async function getAllPhotos(): Promise<ProgressPhoto[]> {
+  const photos = await pruneOrphans(await readPhotosRaw());
+  return sortPhotosByDateDesc(photos);
+}
+
+export async function getPhotosForProject(projectId: string): Promise<ProgressPhoto[]> {
+  const photos = await getAllPhotos();
+  return photos.filter((photo) => photo.projectId === projectId);
+}
+
+export async function getPhotoById(photoId: string): Promise<ProgressPhoto | null> {
+  const photos = await getAllPhotos();
+  const photo = photos.find((item) => item.id === photoId) ?? null;
+  if (!photo) {
+    return null;
+  }
+
+  if (!(await fileExists(photo.uri))) {
+    await deletePhoto(photo.id, true);
+    return null;
+  }
+
+  return photo;
+}
+
+export async function getPhotoByDate(
+  projectId: string,
+  date: string
+): Promise<ProgressPhoto | null> {
+  const photos = await getPhotosForProject(projectId);
+  const photo = photos.find((item) => item.date === date) ?? null;
+  if (!photo) {
+    return null;
+  }
+
+  if (!(await fileExists(photo.uri))) {
+    await deletePhoto(photo.id, true);
+    return null;
+  }
+
+  return photo;
+}
+
+export async function savePhoto(
+  photo: ProgressPhoto,
+  skipSnapshot = false
+): Promise<void> {
+  if (!skipSnapshot) {
+    await createMetadataSnapshot();
+  }
+
+  await savePhotoWithoutSnapshot(photo);
+}
+
+export async function deletePhoto(
+  photoId: string,
+  skipSnapshot = false
+): Promise<void> {
+  if (!skipSnapshot) {
+    await createMetadataSnapshot();
+  }
+
+  const photos = await readPhotosRaw();
+  const photo = photos.find((item) => item.id === photoId);
   if (photo) {
     await deletePhotoFile(photo.uri);
   }
-  await persistPhotos(photos.filter((p) => p.id !== photoId));
+
+  await writePhotosRaw(photos.filter((item) => item.id !== photoId));
 }
 
-export async function deletePhotosForProject(projectId: string): Promise<void> {
-  const photos = await loadPhotosRaw();
-  const projectPhotos = photos.filter((p) => p.projectId === projectId);
+export async function deletePhotosForProject(
+  projectId: string,
+  skipSnapshot = false
+): Promise<void> {
+  if (!skipSnapshot) {
+    await createMetadataSnapshot();
+  }
+
+  const photos = await readPhotosRaw();
+  const projectPhotos = photos.filter((photo) => photo.projectId === projectId);
 
   for (const photo of projectPhotos) {
     await deletePhotoFile(photo.uri);
   }
 
-  await persistPhotos(photos.filter((p) => p.projectId !== projectId));
+  await writePhotosRaw(photos.filter((photo) => photo.projectId !== projectId));
 }
 
 export async function replacePhotoForDate(
@@ -129,10 +147,12 @@ export async function replacePhotoForDate(
   date: string,
   tempUri: string
 ): Promise<ProgressPhoto> {
+  await createMetadataSnapshot();
+
   const permanentUri = await copyPhotoToProjectStorage(tempUri, projectId, date);
   const now = new Date().toISOString();
-  const existing = (await loadPhotosRaw()).find(
-    (p) => p.projectId === projectId && p.date === date
+  const existing = (await readPhotosRaw()).find(
+    (photo) => photo.projectId === projectId && photo.date === date
   );
 
   const photo: ProgressPhoto = {
@@ -144,7 +164,7 @@ export async function replacePhotoForDate(
     updatedAt: now,
   };
 
-  await savePhoto(photo);
+  await savePhotoWithoutSnapshot(photo);
   await touchProjectAfterPhotoSave(projectId, permanentUri);
   return photo;
 }
@@ -158,7 +178,14 @@ export async function touchProjectAfterPhotoSave(
 }
 
 export async function appendImportedPhotos(photos: ProgressPhoto[]): Promise<void> {
-  if (photos.length === 0) return;
-  const existing = await loadPhotosRaw();
-  await persistPhotosDirect([...existing, ...photos]);
+  if (photos.length === 0) {
+    return;
+  }
+
+  const existing = await readPhotosRaw();
+  await writePhotosRaw([...existing, ...photos]);
+}
+
+export async function persistPhotosDirect(photos: ProgressPhoto[]): Promise<void> {
+  await writePhotosRaw(photos);
 }

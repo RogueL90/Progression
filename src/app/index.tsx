@@ -13,10 +13,17 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { EmptyState } from '@/components/EmptyState';
 import { ImportPreviewCard } from '@/components/ImportPreviewCard';
+import { MetadataRecoveryCard } from '@/components/MetadataRecoveryCard';
 import { PrimaryButton } from '@/components/PrimaryButton';
 import { ProjectCard } from '@/components/ProjectCard';
 import { theme } from '@/constants/theme';
 import { importProjectBackup, validateBackupZip } from '@/data/backupService';
+import { getMetadataHealth } from '@/data/metadataHealth';
+import {
+  getLatestSnapshotFileHealth,
+  hasRecoverableMetadataSnapshot,
+  restoreMetadataFromLatestSnapshot,
+} from '@/data/metadataSnapshotService';
 import { getAllProjects } from '@/data/projectStorage';
 import { getStatsForProject } from '@/data/stats';
 import type { BackupManifest } from '@/types/backup';
@@ -29,6 +36,12 @@ type ProjectListItem = Project & {
   latestPhotoDate?: string;
 };
 
+type RecoveryInfo = {
+  snapshotCreatedAt: string;
+  projectCount: number;
+  photoCount: number;
+};
+
 export default function ProjectListScreen() {
   const router = useRouter();
   const [items, setItems] = useState<ProjectListItem[]>([]);
@@ -39,6 +52,9 @@ export default function ProjectListScreen() {
   const [pendingZipUri, setPendingZipUri] = useState<string | null>(null);
   const [pendingManifest, setPendingManifest] = useState<BackupManifest | null>(null);
   const [pendingPhotoCount, setPendingPhotoCount] = useState(0);
+  const [recoveryInfo, setRecoveryInfo] = useState<RecoveryInfo | null>(null);
+  const [showRecoveryCard, setShowRecoveryCard] = useState(true);
+  const [restoringSnapshot, setRestoringSnapshot] = useState(false);
 
   const loadItems = useCallback(async () => {
     setLoading(true);
@@ -55,12 +71,38 @@ export default function ProjectListScreen() {
       })
     );
     setItems(enriched);
+
+    const [metadataHealth, recoverable] = await Promise.all([
+      getMetadataHealth(),
+      hasRecoverableMetadataSnapshot(),
+    ]);
+
+    if (
+      recoverable &&
+      (enriched.length === 0 ||
+        metadataHealth.projectsCorrupted ||
+        metadataHealth.photosCorrupted)
+    ) {
+      const snapshotInfo = await getLatestSnapshotFileHealth();
+      if (snapshotInfo.createdAt) {
+        setRecoveryInfo({
+          snapshotCreatedAt: snapshotInfo.createdAt,
+          projectCount: snapshotInfo.projectCount,
+          photoCount: snapshotInfo.photoCount,
+        });
+      } else {
+        setRecoveryInfo(null);
+      }
+    } else {
+      setRecoveryInfo(null);
+    }
+
     setLoading(false);
   }, []);
 
   useFocusEffect(
     useCallback(() => {
-      loadItems();
+      void loadItems();
     }, [loadItems])
   );
 
@@ -74,7 +116,9 @@ export default function ProjectListScreen() {
   const handleImportBackup = async () => {
     try {
       const zipUri = await pickBackupZipFile();
-      if (!zipUri) return;
+      if (!zipUri) {
+        return;
+      }
 
       setValidating(true);
       const validation = await validateBackupZip(zipUri);
@@ -99,7 +143,9 @@ export default function ProjectListScreen() {
   };
 
   const confirmImport = async () => {
-    if (!pendingZipUri) return;
+    if (!pendingZipUri) {
+      return;
+    }
 
     try {
       setImporting(true);
@@ -115,6 +161,23 @@ export default function ProjectListScreen() {
       );
     } finally {
       setImporting(false);
+    }
+  };
+
+  const handleRestoreSnapshot = async () => {
+    try {
+      setRestoringSnapshot(true);
+      await restoreMetadataFromLatestSnapshot();
+      setShowRecoveryCard(false);
+      await loadItems();
+      Alert.alert('Restore complete', 'Metadata restored from local snapshot.');
+    } catch (error) {
+      Alert.alert(
+        'Restore failed',
+        error instanceof Error ? error.message : 'Could not restore this snapshot.'
+      );
+    } finally {
+      setRestoringSnapshot(false);
     }
   };
 
@@ -138,6 +201,17 @@ export default function ProjectListScreen() {
         <Text style={styles.backupNote}>
           Your progress is yours. Export a backup anytime and restore it later.
         </Text>
+        {showRecoveryCard && recoveryInfo ? (
+          <MetadataRecoveryCard
+            snapshotCreatedAt={recoveryInfo.snapshotCreatedAt}
+            projectCount={recoveryInfo.projectCount}
+            photoCount={recoveryInfo.photoCount}
+            onRestoreLatest={() => {
+              void handleRestoreSnapshot();
+            }}
+            onDismiss={() => setShowRecoveryCard(false)}
+          />
+        ) : null}
       </View>
 
       {loading ? (
@@ -153,6 +227,9 @@ export default function ProjectListScreen() {
             onAction={() => router.push('/projects/new')}
           />
           {importButton}
+          {restoringSnapshot ? (
+            <ActivityIndicator color={theme.accent} style={styles.restoreSpinner} />
+          ) : null}
         </View>
       ) : (
         <FlatList
@@ -176,6 +253,9 @@ export default function ProjectListScreen() {
                 onPress={() => router.push('/projects/new')}
               />
               {importButton}
+              {restoringSnapshot ? (
+                <ActivityIndicator color={theme.accent} style={styles.restoreSpinner} />
+              ) : null}
             </View>
           }
         />
@@ -193,12 +273,12 @@ export default function ProjectListScreen() {
             <Text style={styles.modalDescription}>
               Restore a Progression backup as a new project.
             </Text>
-            {pendingManifest && (
+            {pendingManifest ? (
               <ImportPreviewCard
                 manifest={pendingManifest}
                 photoCount={pendingPhotoCount}
               />
-            )}
+            ) : null}
             <View style={styles.modalActions}>
               <PrimaryButton
                 title="Cancel"
@@ -208,7 +288,9 @@ export default function ProjectListScreen() {
               />
               <PrimaryButton
                 title={importing ? 'Importing...' : 'Import as New Project'}
-                onPress={confirmImport}
+                onPress={() => {
+                  void confirmImport();
+                }}
                 loading={importing}
                 disabled={importing}
                 style={styles.modalButton}
@@ -272,6 +354,9 @@ const styles = StyleSheet.create({
     marginTop: theme.spacing.sm,
   },
   importButton: {
+    marginTop: theme.spacing.sm,
+  },
+  restoreSpinner: {
     marginTop: theme.spacing.sm,
   },
   modalOverlay: {

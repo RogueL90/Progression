@@ -1,11 +1,8 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-import {
-  LEGACY_PHOTOS_STORAGE_KEY,
-  PHOTOS_STORAGE_KEY,
-  persistPhotosDirect,
-} from '@/data/photoStorage';
-import { PROJECTS_STORAGE_KEY, persistProjectsDirect } from '@/data/projectStorage';
+import { createMetadataSnapshot } from '@/data/metadataSnapshotService';
+import { readProjectsRaw, writePhotosRaw, writeProjectsRaw } from '@/data/rawMetadataStorage';
+import { LEGACY_PHOTOS_STORAGE_KEY } from '@/data/photoStorage';
 import type { ProgressPhoto } from '@/types/photo';
 import type { Project } from '@/types/project';
 
@@ -14,29 +11,28 @@ function generateId(): string {
 }
 
 export async function runMigrations(): Promise<void> {
-  const existingProjects = await AsyncStorage.getItem(PROJECTS_STORAGE_KEY);
-  if (existingProjects) {
-    try {
-      const parsed = JSON.parse(existingProjects);
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        return;
-      }
-    } catch {
-      // Continue with migration
-    }
+  const existingProjects = await readProjectsRaw();
+  if (existingProjects.length > 0) {
+    return;
   }
 
   const legacyRaw = await AsyncStorage.getItem(LEGACY_PHOTOS_STORAGE_KEY);
-  if (!legacyRaw) return;
+  if (!legacyRaw) {
+    return;
+  }
 
   let legacyPhotos: ProgressPhoto[] = [];
   try {
     const parsed = JSON.parse(legacyRaw);
-    if (!Array.isArray(parsed) || parsed.length === 0) return;
+    if (!Array.isArray(parsed) || parsed.length === 0) {
+      return;
+    }
     legacyPhotos = parsed;
   } catch {
     return;
   }
+
+  await createMetadataSnapshot();
 
   const sortedLegacy = [...legacyPhotos].sort((a, b) => b.date.localeCompare(a.date));
   const now = new Date().toISOString();
@@ -55,6 +51,6 @@ export async function runMigrations(): Promise<void> {
     projectId,
   }));
 
-  await persistProjectsDirect([project]);
-  await persistPhotosDirect(migratedPhotos);
+  await writeProjectsRaw([project]);
+  await writePhotosRaw(migratedPhotos);
 }

@@ -1,16 +1,20 @@
 import { Directory, File, Paths } from 'expo-file-system';
 
-export const STORAGE_ROOT = 'progression';
+import {
+  INTERNAL_BACKUPS_DIR,
+  PROGRESSION_ROOT_DIR,
+} from '@/constants/storage';
+
 export const PROJECTS_DIR = 'projects';
 export const PHOTOS_DIR = 'photos';
 export const EXPORTS_DIR = 'exports';
 
 function getExportDirectory(): Directory {
-  return new Directory(Paths.cache, STORAGE_ROOT, EXPORTS_DIR);
+  return new Directory(Paths.cache, PROGRESSION_ROOT_DIR, EXPORTS_DIR);
 }
 
 function getProjectDirectory(projectId: string): Directory {
-  return new Directory(Paths.document, STORAGE_ROOT, PROJECTS_DIR, projectId);
+  return new Directory(Paths.document, PROGRESSION_ROOT_DIR, PROJECTS_DIR, projectId);
 }
 
 function getProjectPhotosDirectory(projectId: string): Directory {
@@ -92,6 +96,15 @@ export async function ensureExportDirectory(): Promise<string> {
     exportDir.create({ intermediates: true, idempotent: true });
   }
   return exportDir.uri;
+}
+
+export async function ensureInternalBackupsFileDirectory(): Promise<string> {
+  const directory = new Directory(Paths.document, INTERNAL_BACKUPS_DIR);
+  if (!directory.exists) {
+    directory.create({ intermediates: true, idempotent: true });
+  }
+
+  return directory.uri;
 }
 
 export async function readFileBytes(uri: string): Promise<Uint8Array> {
