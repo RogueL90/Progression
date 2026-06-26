@@ -33,7 +33,11 @@ export async function readProjectsRawResult(): Promise<RawMetadataReadResult<Pro
 }
 
 export async function writeProjectsRaw(projects: Project[]): Promise<void> {
-  await AsyncStorage.setItem(RAW_PROJECTS_STORAGE_KEY, JSON.stringify(projects));
+  try {
+    await AsyncStorage.setItem(RAW_PROJECTS_STORAGE_KEY, JSON.stringify(projects));
+  } catch {
+    throw new Error('Could not save project data. Please try again.');
+  }
 }
 
 export async function readPhotosRawResult(): Promise<RawMetadataReadResult<ProgressPhoto[]>> {
@@ -41,7 +45,11 @@ export async function readPhotosRawResult(): Promise<RawMetadataReadResult<Progr
 }
 
 export async function writePhotosRaw(photos: ProgressPhoto[]): Promise<void> {
-  await AsyncStorage.setItem(RAW_PHOTOS_STORAGE_KEY, JSON.stringify(photos));
+  try {
+    await AsyncStorage.setItem(RAW_PHOTOS_STORAGE_KEY, JSON.stringify(photos));
+  } catch {
+    throw new Error('Could not save photo data. Please try again.');
+  }
 }
 
 export async function readProjectsRaw(): Promise<Project[]> {

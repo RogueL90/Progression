@@ -1,5 +1,15 @@
-import type { Project, ProjectType } from '@/types/project';
+import type {
+  Project,
+  ProjectReminderSettings,
+  ProjectType,
+} from '@/types/project';
 import { createMetadataSnapshot } from '@/data/metadataSnapshotService';
+import {
+  cancelProjectReminders,
+  requestNotificationPermissions,
+  rescheduleProjectReminder,
+  resolveReminderSettings,
+} from '@/data/notificationService';
 import { deletePhotosForProject } from '@/data/photoStorage';
 import {
   readProjectsRaw,
@@ -15,6 +25,18 @@ function generateId(): string {
 
 function sortProjects(projects: Project[]): Project[] {
   return [...projects].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+}
+
+export function getDefaultReminderSettings(): ProjectReminderSettings {
+  return {
+    enabled: false,
+    frequency: 'daily',
+    intervalValue: 1,
+    intervalUnit: 'days',
+    timeHour: 20,
+    timeMinute: 0,
+    notificationIds: [],
+  };
 }
 
 export async function getAllProjects(): Promise<Project[]> {
@@ -44,6 +66,7 @@ export async function createProject(input: {
     type: input.type,
     createdAt: now,
     updatedAt: now,
+    reminderSettings: getDefaultReminderSettings(),
   };
 
   const projects = await readProjectsRaw();
@@ -77,13 +100,64 @@ export async function updateProject(
   return updatedProject;
 }
 
+export async function updateProjectReminderSettings(
+  projectId: string,
+  settings: ProjectReminderSettings
+): Promise<Project> {
+  const project = await getProjectById(projectId);
+  if (!project) {
+    throw new Error('Project not found');
+  }
+
+  await createMetadataSnapshot();
+  await cancelProjectReminders(project);
+
+  let nextSettings: ProjectReminderSettings = {
+    ...resolveReminderSettings(settings),
+    notificationIds: [],
+  };
+
+  if (nextSettings.enabled) {
+    const granted = await requestNotificationPermissions();
+    if (!granted) {
+      nextSettings = {
+        ...nextSettings,
+        enabled: false,
+        notificationIds: [],
+      };
+    } else {
+      try {
+        nextSettings = await rescheduleProjectReminder(project, nextSettings);
+      } catch {
+        nextSettings = {
+          ...nextSettings,
+          enabled: false,
+          notificationIds: [],
+        };
+      }
+    }
+  }
+
+  return updateProject(projectId, { reminderSettings: nextSettings });
+}
+
 export async function deleteProject(projectId: string): Promise<void> {
+  const project = await getProjectById(projectId);
+
+  if (project) {
+    try {
+      await cancelProjectReminders(project);
+    } catch {
+      // Never block project deletion.
+    }
+  }
+
   await createMetadataSnapshot();
   await deletePhotosForProject(projectId, true);
   await deleteProjectDirectory(projectId);
 
   const projects = await readProjectsRaw();
-  await writeProjectsRaw(projects.filter((project) => project.id !== projectId));
+  await writeProjectsRaw(projects.filter((p) => p.id !== projectId));
 }
 
 export async function persistProjectsDirect(projects: Project[]): Promise<void> {

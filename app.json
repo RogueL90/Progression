@@ -35,7 +35,9 @@
         {
           "cameraPermission": "Progression needs camera access to capture progress photos. Photos are stored only on this device."
         }
-      ]
+      ],
+      "expo-notifications",
+      "@react-native-community/datetimepicker"
     ]
   }
 }

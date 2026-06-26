@@ -29,6 +29,7 @@ import { getStatsForProject } from '@/data/stats';
 import type { BackupManifest } from '@/types/backup';
 import type { Project } from '@/types/project';
 import { pickBackupZipFile } from '@/utils/documentPicker';
+import { getErrorMessage } from '@/utils/errors';
 
 type ProjectListItem = Project & {
   totalPhotos: number;
@@ -136,9 +137,12 @@ export default function ProjectListScreen() {
       setPendingManifest(validation.manifest);
       setPendingPhotoCount(validation.photoCount ?? validation.manifest.photos.length);
       setPreviewVisible(true);
-    } catch {
+    } catch (error) {
       setValidating(false);
-      Alert.alert('Import failed', 'Could not import this backup.');
+      Alert.alert(
+        'Import failed',
+        getErrorMessage(error, 'Could not import this backup.')
+      );
     }
   };
 
@@ -157,7 +161,7 @@ export default function ProjectListScreen() {
     } catch (error) {
       Alert.alert(
         'Import failed',
-        error instanceof Error ? error.message : 'Could not import this backup.'
+        getErrorMessage(error, 'Could not import this backup.')
       );
     } finally {
       setImporting(false);
@@ -193,7 +197,7 @@ export default function ProjectListScreen() {
   );
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={styles.container} edges={['top']}>
       <View style={styles.header}>
         <Text style={styles.title}>Projects</Text>
         <Text style={styles.subtitle}>Track visual progress over time.</Text>
@@ -339,6 +343,7 @@ const styles = StyleSheet.create({
   listContent: {
     padding: theme.spacing.md,
     paddingTop: 0,
+    paddingBottom: theme.spacing.md,
   },
   centered: {
     flex: 1,

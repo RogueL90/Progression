@@ -11,6 +11,7 @@ import {
 
 import { PrimaryButton } from '@/components/PrimaryButton';
 import { BackupSection } from '@/components/BackupSection';
+import { ProjectReminderSection } from '@/components/ProjectReminderSection';
 import { StatCard } from '@/components/StatCard';
 import { getProjectTypeLabel } from '@/constants/projectTypes';
 import { theme } from '@/constants/theme';
@@ -21,6 +22,7 @@ import { useProject } from '@/hooks/useProject';
 import { useTodayPhoto } from '@/hooks/useTodayPhoto';
 import type { PhotoStats } from '@/types/photo';
 import { formatDisplayDate } from '@/utils/date';
+import { getErrorMessage } from '@/utils/errors';
 import { shareBackupFile } from '@/utils/share';
 
 export default function ProjectDashboardScreen() {
@@ -33,6 +35,7 @@ export default function ProjectDashboardScreen() {
   const [statsLoading, setStatsLoading] = useState(true);
   const [deleting, setDeleting] = useState(false);
   const [backingUp, setBackingUp] = useState(false);
+  const [reminderPickerActive, setReminderPickerActive] = useState(false);
 
   const runBackup = useCallback(async () => {
     if (!projectId) return;
@@ -40,11 +43,27 @@ export default function ProjectDashboardScreen() {
     try {
       setBackingUp(true);
       const zipUri = await exportProjectBackup(projectId);
-      await shareBackupFile(zipUri);
+      try {
+        await shareBackupFile(zipUri);
+      } catch (shareError) {
+        await refreshProject();
+        Alert.alert(
+          'Backup created',
+          getErrorMessage(
+            shareError,
+            'Backup was created, but the share sheet could not be opened. Try again.'
+          )
+        );
+        return;
+      }
+
       await refreshProject();
       Alert.alert('Backup created', 'Backup created. Save it somewhere safe.');
-    } catch {
-      Alert.alert('Backup failed', 'Could not create backup. Please try again.');
+    } catch (error) {
+      Alert.alert(
+        'Backup failed',
+        getErrorMessage(error, 'Could not create backup. Please try again.')
+      );
     } finally {
       setBackingUp(false);
     }
@@ -113,7 +132,12 @@ export default function ProjectDashboardScreen() {
   }
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+    <ScrollView
+      style={styles.container}
+      contentContainerStyle={styles.content}
+      scrollEnabled={!reminderPickerActive}
+      keyboardShouldPersistTaps="handled"
+    >
       <Text style={styles.name}>{project.name}</Text>
       <Text style={styles.type}>{getProjectTypeLabel(project.type)}</Text>
       <Text style={styles.privacy}>This project is stored locally on this device.</Text>
@@ -177,6 +201,14 @@ export default function ProjectDashboardScreen() {
           </View>
         </View>
       )}
+
+      <ProjectReminderSection
+        project={project}
+        onProjectUpdated={() => {
+          void refreshProject();
+        }}
+        onPickerActiveChange={setReminderPickerActive}
+      />
 
       <BackupSection project={project} backingUp={backingUp} onBackup={runBackup} />
 

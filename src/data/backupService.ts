@@ -7,6 +7,7 @@ import {
 import {
   createProject,
   deleteProject,
+  getDefaultReminderSettings,
   getProjectById,
   updateProject,
 } from '@/data/projectStorage';
@@ -32,6 +33,7 @@ import {
   readFileBytes,
   writeFileBytes,
 } from '@/utils/file';
+import { getErrorMessage } from '@/utils/errors';
 import { File, Paths } from 'expo-file-system';
 
 function generateId(prefix: string): string {
@@ -60,70 +62,74 @@ export async function exportProjectBackup(projectId: string): Promise<string> {
     throw new Error('Project not found.');
   }
 
-  const photos = await getPhotosForProject(projectId);
-  const usedNames = new Set<string>();
-  const manifestPhotos: BackupPhotoManifestItem[] = [];
-  const zip = new JSZip();
-  let coverPhotoFileName: string | undefined;
+  try {
+    const photos = await getPhotosForProject(projectId);
+    const usedNames = new Set<string>();
+    const manifestPhotos: BackupPhotoManifestItem[] = [];
+    const zip = new JSZip();
+    let coverPhotoFileName: string | undefined;
 
-  for (const photo of photos) {
-    if (!(await fileExists(photo.uri))) {
-      continue;
+    for (const photo of photos) {
+      if (!(await fileExists(photo.uri))) {
+        continue;
+      }
+
+      const fileName = resolvePhotoFileName(photo.date, usedNames);
+      const bytes = await readFileBytes(photo.uri);
+      zip.file(`photos/${fileName}`, bytes);
+
+      manifestPhotos.push({
+        id: photo.id,
+        projectId: photo.projectId,
+        date: photo.date,
+        fileName,
+        createdAt: photo.createdAt,
+        updatedAt: photo.updatedAt,
+        notes: photo.notes,
+      });
+
+      if (project.coverPhotoUri && photo.uri === project.coverPhotoUri) {
+        coverPhotoFileName = fileName;
+      }
     }
 
-    const fileName = resolvePhotoFileName(photo.date, usedNames);
-    const bytes = await readFileBytes(photo.uri);
-    zip.file(`photos/${fileName}`, bytes);
+    if (!coverPhotoFileName && manifestPhotos.length > 0) {
+      coverPhotoFileName = manifestPhotos[0].fileName;
+    }
 
-    manifestPhotos.push({
-      id: photo.id,
-      projectId: photo.projectId,
-      date: photo.date,
-      fileName,
-      createdAt: photo.createdAt,
-      updatedAt: photo.updatedAt,
-      notes: photo.notes,
+    const manifest: BackupManifest = {
+      app: 'Progression',
+      backupVersion: 1,
+      exportedAt: new Date().toISOString(),
+      project: {
+        id: project.id,
+        name: project.name,
+        type: project.type,
+        createdAt: project.createdAt,
+        updatedAt: project.updatedAt,
+        coverPhotoFileName,
+      },
+      photos: manifestPhotos,
+    };
+
+    zip.file('manifest.json', JSON.stringify(manifest, null, 2));
+
+    const zipBytes = await zip.generateAsync({
+      type: 'uint8array',
+      compression: 'DEFLATE',
+      compressionOptions: { level: 6 },
     });
 
-    if (project.coverPhotoUri && photo.uri === project.coverPhotoUri) {
-      coverPhotoFileName = fileName;
-    }
+    const zipUri = await writeZipBytes(getBackupFileName(project.name), zipBytes);
+
+    await updateProject(projectId, {
+      lastBackedUpAt: new Date().toISOString(),
+    });
+
+    return zipUri;
+  } catch (error) {
+    throw new Error(getErrorMessage(error, 'Could not create backup. Please try again.'));
   }
-
-  if (!coverPhotoFileName && manifestPhotos.length > 0) {
-    coverPhotoFileName = manifestPhotos[0].fileName;
-  }
-
-  const manifest: BackupManifest = {
-    app: 'Progression',
-    backupVersion: 1,
-    exportedAt: new Date().toISOString(),
-    project: {
-      id: project.id,
-      name: project.name,
-      type: project.type,
-      createdAt: project.createdAt,
-      updatedAt: project.updatedAt,
-      coverPhotoFileName,
-    },
-    photos: manifestPhotos,
-  };
-
-  zip.file('manifest.json', JSON.stringify(manifest, null, 2));
-
-  const zipBytes = await zip.generateAsync({
-    type: 'uint8array',
-    compression: 'DEFLATE',
-    compressionOptions: { level: 6 },
-  });
-
-  const zipUri = await writeZipBytes(getBackupFileName(project.name), zipBytes);
-
-  await updateProject(projectId, {
-    lastBackedUpAt: new Date().toISOString(),
-  });
-
-  return zipUri;
 }
 
 export async function validateBackupZip(zipUri: string): Promise<BackupValidationResult> {
@@ -273,14 +279,19 @@ export async function importProjectBackup(zipUri: string): Promise<Project> {
       newProject = await updateProject(newProject.id, { coverPhotoUri });
     }
 
+    newProject = await updateProject(newProject.id, {
+      reminderSettings: getDefaultReminderSettings(),
+    });
+
     return newProject;
   } catch (error) {
     if (newProject) {
-      await deleteProject(newProject.id);
+      try {
+        await deleteProject(newProject.id);
+      } catch {
+        // Best effort cleanup after a failed import.
+      }
     }
-    if (error instanceof Error) {
-      throw error;
-    }
-    throw new Error('Could not import this backup.');
+    throw new Error(getErrorMessage(error, 'Could not import this backup.'));
   }
 }

@@ -13,6 +13,7 @@ import {
   writePhotosRaw,
   writeProjectsRaw,
 } from '@/data/rawMetadataStorage';
+import { cancelAllProgressionNotifications } from '@/data/notificationService';
 import type {
   MetadataSnapshot,
   MetadataSnapshotValidationResult,
@@ -257,8 +258,27 @@ async function restoreMetadataFromSnapshot(
 
   isRestoringMetadata = true;
   try {
-    await writeProjectsRaw(validation.snapshot.projects);
+    const sanitizedProjects = validation.snapshot.projects.map((project) => ({
+      ...project,
+      reminderSettings: {
+        enabled: false,
+        frequency: 'daily' as const,
+        intervalValue: 1,
+        intervalUnit: 'days' as const,
+        timeHour: 20,
+        timeMinute: 0,
+        notificationIds: [] as string[],
+      },
+    }));
+
+    await writeProjectsRaw(sanitizedProjects);
     await writePhotosRaw(validation.snapshot.photos);
+
+    try {
+      await cancelAllProgressionNotifications();
+    } catch {
+      // Best effort only.
+    }
   } finally {
     isRestoringMetadata = false;
   }
