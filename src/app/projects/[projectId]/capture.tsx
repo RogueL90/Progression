@@ -4,17 +4,14 @@ import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useCameraPermission as useVisionCameraPermission } from 'react-native-vision-camera';
 
 import { CaptureGhostOverlay } from '@/components/CaptureGhostOverlay';
 import { CaptureGridOverlay } from '@/components/CaptureGridOverlay';
 import { CaptureSettingsSheet } from '@/components/CaptureSettingsSheet';
 import { CaptureShutterButton } from '@/components/CaptureShutterButton';
-import {
-  FaceMeshCaptureView,
-  type FaceMeshCaptureHandle,
-} from '@/components/FaceMeshCaptureView';
+import type { FaceMeshCaptureHandle } from '@/components/FaceMeshCaptureView';
 import { PrimaryButton } from '@/components/PrimaryButton';
+import { FACE_MESH_ENABLED } from '@/constants/featureFlags';
 import { isFaceProjectType } from '@/constants/projectTypes';
 import { theme } from '@/constants/theme';
 import { getLatestPhotoForProject, replacePhotoForDate } from '@/data/photoStorage';
@@ -25,6 +22,15 @@ import type { ProgressPhoto } from '@/types/photo';
 import type { ProjectType } from '@/types/project';
 import { formatDisplayDate, getTodayDateString } from '@/utils/date';
 import { getErrorMessage } from '@/utils/errors';
+
+/**
+ * Lazily load Vision Camera face capture only when face mesh is enabled.
+ * A static import would crash Expo Go (native module missing).
+ */
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const FaceMeshCaptureView = FACE_MESH_ENABLED
+  ? (require('@/components/FaceMeshCaptureView').FaceMeshCaptureView as typeof import('@/components/FaceMeshCaptureView').FaceMeshCaptureView)
+  : null;
 
 function getCameraFacing(type: ProjectType): 'front' | 'back' {
   return type === 'selfie' || type === 'side_profile' ? 'front' : 'back';
@@ -42,16 +48,13 @@ export default function ProjectCaptureScreen() {
   const cameraRef = useRef<CameraView>(null);
   const faceCaptureRef = useRef<FaceMeshCaptureHandle>(null);
   const [permission, requestPermission] = useCameraPermissions();
-  const {
-    hasPermission: visionHasPermission,
-    requestPermission: requestVisionPermission,
-  } = useVisionCameraPermission();
   const [cameraReady, setCameraReady] = useState(false);
   const [saving, setSaving] = useState(false);
   const { hasPhotoToday } = useTodayPhoto(projectId);
 
   const today = getTodayDateString();
   const isFaceProject = project ? isFaceProjectType(project.type) : false;
+  const useFaceMeshCapture = FACE_MESH_ENABLED && isFaceProject && FaceMeshCaptureView !== null;
 
   const refreshLatestPhoto = useCallback(async () => {
     if (!projectId) {
@@ -73,14 +76,8 @@ export default function ProjectCaptureScreen() {
   );
 
   useEffect(() => {
-    if (isFaceProject && !visionHasPermission) {
-      void requestVisionPermission();
-    }
-  }, [isFaceProject, visionHasPermission, requestVisionPermission]);
-
-  useEffect(() => {
     setCameraReady(false);
-  }, [settings.showFaceMesh, isFaceProject]);
+  }, [settings.showFaceMesh, useFaceMeshCapture]);
 
   const handleCapture = useCallback(async () => {
     if (!cameraReady || saving || !projectId || !project) return;
@@ -88,7 +85,7 @@ export default function ProjectCaptureScreen() {
     try {
       setSaving(true);
 
-      if (isFaceProjectType(project.type)) {
+      if (useFaceMeshCapture) {
         const result = await faceCaptureRef.current?.takePicture();
         if (!result?.uri) {
           throw new Error('Could not capture photo. Please try again.');
@@ -115,24 +112,9 @@ export default function ProjectCaptureScreen() {
         getErrorMessage(error, 'Something went wrong while saving this photo.')
       );
     }
-  }, [cameraReady, saving, projectId, project, today, router]);
+  }, [cameraReady, saving, projectId, project, today, router, useFaceMeshCapture]);
 
   const handleRequestPermission = useCallback(async () => {
-    if (isFaceProject) {
-      const result = await requestVisionPermission();
-      if (!result) {
-        Alert.alert(
-          'Camera access denied',
-          'Enable camera access in system settings to take progress photos.',
-          [
-            { text: 'Cancel', style: 'cancel' },
-            { text: 'Open Settings', onPress: () => void Linking.openSettings() },
-          ]
-        );
-      }
-      return;
-    }
-
     const result = await requestPermission();
     if (!result?.granted && result?.canAskAgain === false) {
       Alert.alert(
@@ -144,7 +126,7 @@ export default function ProjectCaptureScreen() {
         ]
       );
     }
-  }, [isFaceProject, requestVisionPermission, requestPermission]);
+  }, [requestPermission]);
 
   const hasGhostPhoto = latestPhoto !== null;
   const showGhost = settings.showGhost && hasGhostPhoto && latestPhoto?.uri;
@@ -166,10 +148,7 @@ export default function ProjectCaptureScreen() {
     );
   }
 
-  const permissionGranted = isFaceProject ? visionHasPermission : permission?.granted;
-  const permissionLoading = isFaceProject ? false : !permission;
-
-  if (permissionLoading) {
+  if (!permission) {
     return (
       <View style={styles.centered}>
         <ActivityIndicator color={theme.accent} />
@@ -177,7 +156,7 @@ export default function ProjectCaptureScreen() {
     );
   }
 
-  if (!permissionGranted) {
+  if (!permission.granted) {
     return (
       <View style={styles.centered}>
         <Text style={styles.message}>
@@ -199,7 +178,7 @@ export default function ProjectCaptureScreen() {
 
   return (
     <View style={styles.container}>
-      {isFocused && isFaceProject && (
+      {isFocused && useFaceMeshCapture && FaceMeshCaptureView ? (
         <FaceMeshCaptureView
           ref={faceCaptureRef}
           facing={getCameraFacing(project.type)}
@@ -207,16 +186,16 @@ export default function ProjectCaptureScreen() {
           showFaceMesh={settings.showFaceMesh}
           onCameraReadyChange={setCameraReady}
         />
-      )}
+      ) : null}
 
-      {isFocused && !isFaceProject && (
+      {isFocused && !useFaceMeshCapture ? (
         <CameraView
           ref={cameraRef}
           style={styles.camera}
           facing={getCameraFacing(project.type)}
           onCameraReady={() => setCameraReady(true)}
         />
-      )}
+      ) : null}
 
       {showGhost && <CaptureGhostOverlay uri={latestPhoto.uri} />}
 
@@ -259,7 +238,7 @@ export default function ProjectCaptureScreen() {
         visible={settingsVisible}
         settings={settings}
         hasGhostPhoto={hasGhostPhoto}
-        showFaceMeshOption={isFaceProject}
+        showFaceMeshOption={useFaceMeshCapture}
         onClose={() => setSettingsVisible(false)}
         onUpdate={(updates) => {
           void updateSettings(updates);

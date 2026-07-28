@@ -1,7 +1,10 @@
+import 'react-native-gesture-handler';
+
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, View } from 'react-native';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { theme } from '@/constants/theme';
@@ -79,24 +82,28 @@ export default function RootLayout() {
 
   if (!ready) {
     return (
-      <SafeAreaProvider>
-        <View
-          style={{
-            flex: 1,
-            backgroundColor: theme.background,
-            alignItems: 'center',
-            justifyContent: 'center',
-          }}
-        >
-          <ActivityIndicator color={theme.accent} size="large" />
-        </View>
-      </SafeAreaProvider>
+      <GestureHandlerRootView style={{ flex: 1 }}>
+        <SafeAreaProvider>
+          <View
+            style={{
+              flex: 1,
+              backgroundColor: theme.background,
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+          >
+            <ActivityIndicator color={theme.accent} size="large" />
+          </View>
+        </SafeAreaProvider>
+      </GestureHandlerRootView>
     );
   }
 
   return (
-    <SafeAreaProvider>
-      <AppShell />
-    </SafeAreaProvider>
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <SafeAreaProvider>
+        <AppShell />
+      </SafeAreaProvider>
+    </GestureHandlerRootView>
   );
 }

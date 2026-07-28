@@ -1,8 +1,15 @@
 /**
  * Temporary feature flags.
  *
- * Notifications are disabled until we have a paid Apple Developer account
- * for push / App Store notification capability. See docs/NOTIFICATIONS.md
- * for how to turn them back on with the same behavior as before.
+ * See docs/NOTIFICATIONS.md and docs/FACE_MESH.md for how to re-enable.
  */
+
+/** Paid Apple Developer account needed for App Store push capability. */
 export const NOTIFICATIONS_ENABLED = false;
+
+/**
+ * Face mesh uses Vision Camera + ML Kit, which require a custom native
+ * development build (not Expo Go). Disabled so day-to-day work can run in
+ * Expo Go with plain expo-camera.
+ */
+export const FACE_MESH_ENABLED = false;
