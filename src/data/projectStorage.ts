@@ -3,6 +3,7 @@ import type {
   ProjectReminderSettings,
   ProjectType,
 } from '@/types/project';
+import { NOTIFICATIONS_ENABLED } from '@/constants/featureFlags';
 import { createMetadataSnapshot } from '@/data/metadataSnapshotService';
 import {
   cancelProjectReminders,
@@ -116,6 +117,16 @@ export async function updateProjectReminderSettings(
     ...resolveReminderSettings(settings),
     notificationIds: [],
   };
+
+  // Notifications temporarily disabled — see docs/NOTIFICATIONS.md
+  if (!NOTIFICATIONS_ENABLED) {
+    nextSettings = {
+      ...nextSettings,
+      enabled: false,
+      notificationIds: [],
+    };
+    return updateProject(projectId, { reminderSettings: nextSettings });
+  }
 
   if (nextSettings.enabled) {
     const granted = await requestNotificationPermissions();

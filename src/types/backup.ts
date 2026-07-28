@@ -5,6 +5,8 @@ export type BackupPhotoManifestItem = {
   projectId: string;
   date: string;
   fileName: string;
+  /** Optional face mesh sidecar filename under photos/ */
+  meshFileName?: string;
   createdAt: string;
   updatedAt?: string;
   notes?: string;
@@ -12,7 +14,8 @@ export type BackupPhotoManifestItem = {
 
 export type BackupManifest = {
   app: 'Progression';
-  backupVersion: 1;
+  /** v1: photos only; v2: optional face mesh sidecars */
+  backupVersion: 1 | 2;
   exportedAt: string;
   project: {
     id: string;

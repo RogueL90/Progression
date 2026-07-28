@@ -2,6 +2,7 @@ import { router } from 'expo-router';
 import * as Notifications from 'expo-notifications';
 import { useEffect } from 'react';
 
+import { NOTIFICATIONS_ENABLED } from '@/constants/featureFlags';
 import { getProjectById } from '@/data/projectStorage';
 
 type ProjectReminderNotificationData = {
@@ -42,6 +43,10 @@ async function handleNotificationResponse(
 
 export function useNotificationRouting(): void {
   useEffect(() => {
+    if (!NOTIFICATIONS_ENABLED) {
+      return;
+    }
+
     void handleNotificationResponse(Notifications.getLastNotificationResponse());
 
     const subscription = Notifications.addNotificationResponseReceivedListener(

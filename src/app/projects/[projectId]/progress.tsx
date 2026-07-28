@@ -1,5 +1,5 @@
 import { useFocusEffect, useLocalSearchParams } from 'expo-router';
-import { useCallback } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Image,
@@ -10,8 +10,12 @@ import {
 } from 'react-native';
 
 import { EmptyState } from '@/components/EmptyState';
+import { PhotoWithFaceMesh } from '@/components/PhotoWithFaceMesh';
 import { PrimaryButton } from '@/components/PrimaryButton';
+import { ViewerOverlayToggles } from '@/components/ViewerOverlayToggles';
+import { isFaceProjectType } from '@/constants/projectTypes';
 import { theme } from '@/constants/theme';
+import { useProject } from '@/hooks/useProject';
 import { useProjectPhotos } from '@/hooks/useProjectPhotos';
 import { type TimelapseSpeed, useTimelapse } from '@/hooks/useTimelapse';
 import { formatDisplayDate } from '@/utils/date';
@@ -20,6 +24,7 @@ const SPEEDS: TimelapseSpeed[] = [1, 2, 5, 10];
 
 export default function ProjectProgressScreen() {
   const { projectId } = useLocalSearchParams<{ projectId: string }>();
+  const { project } = useProject(projectId);
   const { photos, loading, refreshPhotos } = useProjectPhotos(projectId);
   const {
     frames,
@@ -32,6 +37,15 @@ export default function ProjectProgressScreen() {
     restart,
     setSpeed,
   } = useTimelapse(photos);
+  const [showFace, setShowFace] = useState(true);
+  const [showMesh, setShowMesh] = useState(false);
+
+  const isFaceProject = project ? isFaceProjectType(project.type) : false;
+  const meshAvailable = useMemo(
+    () => photos.some((photo) => Boolean(photo.faceMeshUri)),
+    [photos]
+  );
+  const currentHasMesh = Boolean(currentPhoto?.faceMeshUri);
 
   useFocusEffect(
     useCallback(() => {
@@ -60,11 +74,19 @@ export default function ProjectProgressScreen() {
     <View style={styles.container}>
       <View style={styles.viewer}>
         {currentPhoto ? (
-          <Image
-            source={{ uri: currentPhoto.uri }}
-            style={styles.frame}
-            resizeMode="contain"
-          />
+          isFaceProject ? (
+            <PhotoWithFaceMesh
+              photo={currentPhoto}
+              showFace={showFace}
+              showMesh={showMesh && currentHasMesh}
+            />
+          ) : (
+            <Image
+              source={{ uri: currentPhoto.uri }}
+              style={styles.frame}
+              resizeMode="contain"
+            />
+          )
         ) : (
           <View style={styles.framePlaceholder} />
         )}
@@ -78,6 +100,18 @@ export default function ProjectProgressScreen() {
           {frames.length > 0 ? `${currentIndex + 1} of ${frames.length}` : '0 of 0'}
         </Text>
       </View>
+
+      {isFaceProject && (
+        <View style={styles.toggles}>
+          <ViewerOverlayToggles
+            showFace={showFace}
+            showMesh={showMesh}
+            meshAvailable={meshAvailable}
+            onShowFaceChange={setShowFace}
+            onShowMeshChange={setShowMesh}
+          />
+        </View>
+      )}
 
       <View style={styles.speedRow}>
         <Text style={styles.speedLabel}>Speed</Text>
@@ -156,6 +190,9 @@ const styles = StyleSheet.create({
   frameCounter: {
     color: theme.textMuted,
     fontSize: 14,
+  },
+  toggles: {
+    marginBottom: theme.spacing.md,
   },
   speedRow: {
     marginBottom: theme.spacing.md,

@@ -36,3 +36,7 @@ export function getProjectTypeLabel(type: ProjectType): string {
 export function getProjectTypeDescription(type: ProjectType): string {
   return PROJECT_TYPES.find((t) => t.type === type)?.description ?? '';
 }
+
+export function isFaceProjectType(type: ProjectType): boolean {
+  return type === 'selfie' || type === 'side_profile';
+}

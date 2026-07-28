@@ -13,6 +13,7 @@ import { PrimaryButton } from '@/components/PrimaryButton';
 import { BackupSection } from '@/components/BackupSection';
 import { ProjectReminderSection } from '@/components/ProjectReminderSection';
 import { StatCard } from '@/components/StatCard';
+import { NOTIFICATIONS_ENABLED } from '@/constants/featureFlags';
 import { getProjectTypeLabel } from '@/constants/projectTypes';
 import { theme } from '@/constants/theme';
 import { exportProjectBackup } from '@/data/backupService';
@@ -202,13 +203,15 @@ export default function ProjectDashboardScreen() {
         </View>
       )}
 
-      <ProjectReminderSection
-        project={project}
-        onProjectUpdated={() => {
-          void refreshProject();
-        }}
-        onPickerActiveChange={setReminderPickerActive}
-      />
+      {NOTIFICATIONS_ENABLED && (
+        <ProjectReminderSection
+          project={project}
+          onProjectUpdated={() => {
+            void refreshProject();
+          }}
+          onPickerActiveChange={setReminderPickerActive}
+        />
+      )}
 
       <BackupSection project={project} backingUp={backingUp} onBackup={runBackup} />
 

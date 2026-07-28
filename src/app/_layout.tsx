@@ -5,6 +5,7 @@ import { ActivityIndicator, View } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { theme } from '@/constants/theme';
+import { NOTIFICATIONS_ENABLED } from '@/constants/featureFlags';
 import {
   configureNotificationHandler,
   refreshRollingReminders,
@@ -57,13 +58,19 @@ export default function RootLayout() {
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
-    configureNotificationHandler();
+    if (NOTIFICATIONS_ENABLED) {
+      configureNotificationHandler();
+    }
 
     runMigrations()
       .catch(() => {
         // Migration failure should not block the app
       })
-      .then(() => refreshRollingReminders())
+      .then(() => {
+        if (NOTIFICATIONS_ENABLED) {
+          return refreshRollingReminders();
+        }
+      })
       .catch(() => {
         // Rolling reminder refresh should not block the app
       })

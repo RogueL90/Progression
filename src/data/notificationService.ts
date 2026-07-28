@@ -1,6 +1,7 @@
 import { Platform } from 'react-native';
 import * as Notifications from 'expo-notifications';
 
+import { NOTIFICATIONS_ENABLED } from '@/constants/featureFlags';
 import { PROJECT_REMINDERS_CHANNEL_ID } from '@/constants/notifications';
 import { readProjectsRaw } from '@/data/rawMetadataStorage';
 import type {
@@ -58,6 +59,10 @@ export function resolveReminderSettings(
 }
 
 export function configureNotificationHandler(): void {
+  if (!NOTIFICATIONS_ENABLED) {
+    return;
+  }
+
   Notifications.setNotificationHandler({
     handleNotification: async () => ({
       shouldShowBanner: true,
@@ -69,6 +74,10 @@ export function configureNotificationHandler(): void {
 }
 
 export async function ensureAndroidChannel(): Promise<void> {
+  if (!NOTIFICATIONS_ENABLED) {
+    return;
+  }
+
   if (Platform.OS !== 'android' || androidChannelReady) {
     return;
   }
@@ -86,11 +95,19 @@ export async function getNotificationPermissionStatus(): Promise<{
   granted: boolean;
   canAskAgain?: boolean;
 }> {
+  if (!NOTIFICATIONS_ENABLED) {
+    return { granted: false, canAskAgain: false };
+  }
+
   const { granted, canAskAgain } = await Notifications.getPermissionsAsync();
   return { granted, canAskAgain };
 }
 
 export async function requestNotificationPermissions(): Promise<boolean> {
+  if (!NOTIFICATIONS_ENABLED) {
+    return false;
+  }
+
   await ensureAndroidChannel();
 
   const current = await Notifications.getPermissionsAsync();
@@ -271,6 +288,10 @@ async function cancelNotificationIds(notificationIds: string[]): Promise<void> {
 }
 
 export async function scheduleProjectReminder(project: Project): Promise<string[]> {
+  if (!NOTIFICATIONS_ENABLED) {
+    return [];
+  }
+
   await ensureAndroidChannel();
 
   const settings = resolveReminderSettings(project.reminderSettings);
@@ -290,6 +311,10 @@ export async function scheduleProjectReminder(project: Project): Promise<string[
 }
 
 export async function cancelProjectReminders(project: Project): Promise<void> {
+  if (!NOTIFICATIONS_ENABLED) {
+    return;
+  }
+
   const settings = resolveReminderSettings(project.reminderSettings);
   await cancelNotificationIds(settings.notificationIds);
 }
@@ -298,6 +323,14 @@ export async function rescheduleProjectReminder(
   project: Project,
   reminderSettings: ProjectReminderSettings
 ): Promise<ProjectReminderSettings> {
+  if (!NOTIFICATIONS_ENABLED) {
+    return {
+      ...reminderSettings,
+      enabled: false,
+      notificationIds: [],
+    };
+  }
+
   await cancelProjectReminders(project);
 
   if (!reminderSettings.enabled) {
@@ -322,6 +355,10 @@ export async function rescheduleProjectReminder(
 }
 
 export async function cancelAllProgressionNotifications(): Promise<void> {
+  if (!NOTIFICATIONS_ENABLED) {
+    return;
+  }
+
   const projects = await readProjectsRaw();
   const knownIds = new Set<string>();
 
@@ -351,6 +388,10 @@ export async function cancelAllProgressionNotifications(): Promise<void> {
 }
 
 export async function refreshRollingReminders(): Promise<void> {
+  if (!NOTIFICATIONS_ENABLED) {
+    return;
+  }
+
   await ensureAndroidChannel();
 
   const projects = await readProjectsRaw();
@@ -388,6 +429,10 @@ export async function refreshRollingReminders(): Promise<void> {
 }
 
 export async function scheduleTestNotificationInSeconds(seconds: number): Promise<string> {
+  if (!NOTIFICATIONS_ENABLED) {
+    throw new Error('Notifications are temporarily disabled. See docs/NOTIFICATIONS.md.');
+  }
+
   await ensureAndroidChannel();
 
   return Notifications.scheduleNotificationAsync({
@@ -405,6 +450,10 @@ export async function scheduleTestNotificationInSeconds(seconds: number): Promis
 }
 
 export async function getScheduledNotificationCount(): Promise<number> {
+  if (!NOTIFICATIONS_ENABLED) {
+    return 0;
+  }
+
   const scheduled = await Notifications.getAllScheduledNotificationsAsync();
   return scheduled.length;
 }

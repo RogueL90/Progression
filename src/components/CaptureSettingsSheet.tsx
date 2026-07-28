@@ -14,6 +14,7 @@ type CaptureSettingsSheetProps = {
   visible: boolean;
   settings: CaptureSettings;
   hasGhostPhoto: boolean;
+  showFaceMeshOption?: boolean;
   onClose: () => void;
   onUpdate: (updates: Partial<CaptureSettings>) => void;
 };
@@ -27,6 +28,7 @@ export function CaptureSettingsSheet({
   visible,
   settings,
   hasGhostPhoto,
+  showFaceMeshOption = false,
   onClose,
   onUpdate,
 }: CaptureSettingsSheetProps) {
@@ -94,6 +96,24 @@ export function CaptureSettingsSheet({
               thumbColor={settings.showGhost ? theme.accent : theme.textMuted}
             />
           </View>
+
+          {showFaceMeshOption && (
+            <View style={styles.row}>
+              <View style={styles.rowText}>
+                <Text style={styles.rowLabel}>Show face mesh</Text>
+                <Text style={styles.rowHint}>
+                  Live wireframe preview while framing. Mesh is always saved when a face is
+                  detected.
+                </Text>
+              </View>
+              <Switch
+                value={settings.showFaceMesh}
+                onValueChange={(showFaceMesh) => onUpdate({ showFaceMesh })}
+                trackColor={{ false: theme.cardBorder, true: theme.accentMuted }}
+                thumbColor={settings.showFaceMesh ? theme.accent : theme.textMuted}
+              />
+            </View>
+          )}
 
           <Pressable style={styles.doneButton} onPress={onClose}>
             <Text style={styles.doneButtonText}>Done</Text>

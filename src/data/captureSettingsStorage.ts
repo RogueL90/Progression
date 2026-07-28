@@ -8,6 +8,7 @@ const DEFAULT_CAPTURE_SETTINGS: CaptureSettings = {
   showGrid: false,
   gridDensity: 'few',
   showGhost: false,
+  showFaceMesh: true,
 };
 
 function isGridDensity(value: unknown): value is GridDensity {
@@ -25,6 +26,7 @@ function parseCaptureSettings(raw: string | null): CaptureSettings {
       showGrid: parsed.showGrid === true,
       gridDensity: isGridDensity(parsed.gridDensity) ? parsed.gridDensity : 'few',
       showGhost: parsed.showGhost === true,
+      showFaceMesh: parsed.showFaceMesh !== false,
     };
   } catch {
     return { ...DEFAULT_CAPTURE_SETTINGS };

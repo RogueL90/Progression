@@ -9,7 +9,10 @@ import {
   View,
 } from 'react-native';
 
+import { PhotoWithFaceMesh } from '@/components/PhotoWithFaceMesh';
 import { PrimaryButton } from '@/components/PrimaryButton';
+import { ViewerOverlayToggles } from '@/components/ViewerOverlayToggles';
+import { isFaceProjectType } from '@/constants/projectTypes';
 import { theme } from '@/constants/theme';
 import { getPhotoById } from '@/data/photoStorage';
 import { useProject } from '@/hooks/useProject';
@@ -29,6 +32,11 @@ export default function ProjectPhotoDetailScreen() {
   const [loading, setLoading] = useState(true);
   const [deleting, setDeleting] = useState(false);
   const [notFound, setNotFound] = useState(false);
+  const [showFace, setShowFace] = useState(true);
+  const [showMesh, setShowMesh] = useState(false);
+
+  const isFaceProject = project ? isFaceProjectType(project.type) : false;
+  const meshAvailable = Boolean(photo?.faceMeshUri);
 
   const loadPhoto = useCallback(async () => {
     if (!photoId) {
@@ -45,6 +53,9 @@ export default function ProjectPhotoDetailScreen() {
     } else {
       setPhoto(result);
       setNotFound(false);
+      if (!result.faceMeshUri) {
+        setShowMesh(false);
+      }
     }
     setLoading(false);
   }, [photoId, projectId]);
@@ -95,8 +106,26 @@ export default function ProjectPhotoDetailScreen() {
 
   return (
     <View style={styles.container}>
-      <Image source={{ uri: photo.uri }} style={styles.image} resizeMode="contain" />
+      {isFaceProject ? (
+        <PhotoWithFaceMesh
+          photo={photo}
+          showFace={showFace}
+          showMesh={showMesh && meshAvailable}
+        />
+      ) : (
+        <Image source={{ uri: photo.uri }} style={styles.image} resizeMode="contain" />
+      )}
+
       <View style={styles.footer}>
+        {isFaceProject && (
+          <ViewerOverlayToggles
+            showFace={showFace}
+            showMesh={showMesh}
+            meshAvailable={meshAvailable}
+            onShowFaceChange={setShowFace}
+            onShowMeshChange={setShowMesh}
+          />
+        )}
         {project && <Text style={styles.projectName}>{project.name}</Text>}
         <Text style={styles.date}>{formatDisplayDate(photo.date)}</Text>
         <Text style={styles.notesPlaceholder}>Notes coming soon</Text>

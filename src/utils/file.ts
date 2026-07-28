@@ -11,6 +11,7 @@ export const PHOTOS_DIR = 'photos';
 export const EXPORTS_DIR = 'exports';
 
 const DATE_PHOTO_FILE_REGEX = /^\d{4}-\d{2}-\d{2}\.jpg$/;
+const DATE_MESH_FILE_REGEX = /^\d{4}-\d{2}-\d{2}\.mesh\.json$/;
 
 function getExportDirectory(): Directory {
   return new Directory(Paths.cache, PROGRESSION_ROOT_DIR, EXPORTS_DIR);
@@ -50,6 +51,53 @@ export async function getProjectPhotoFilePath(
 ): Promise<string> {
   await ensureProjectPhotosDirectory(projectId);
   return new File(getProjectPhotosDirectory(projectId), `${date}.jpg`).uri;
+}
+
+export async function getProjectFaceMeshFilePath(
+  projectId: string,
+  date: string
+): Promise<string> {
+  await ensureProjectPhotosDirectory(projectId);
+  return new File(getProjectPhotosDirectory(projectId), `${date}.mesh.json`).uri;
+}
+
+export async function writeFaceMeshToProjectStorage(
+  projectId: string,
+  date: string,
+  json: string
+): Promise<string> {
+  try {
+    await ensureProjectPhotosDirectory(projectId);
+    const destFile = new File(getProjectPhotosDirectory(projectId), `${date}.mesh.json`);
+    if (destFile.exists) {
+      destFile.delete();
+    }
+    destFile.create();
+    destFile.write(json);
+
+    if (!(await fileExists(destFile.uri))) {
+      throw new Error('Could not save the face mesh overlay.');
+    }
+
+    return destFile.uri;
+  } catch (error) {
+    if (error instanceof Error && error.message.includes('Could not')) {
+      throw error;
+    }
+
+    throw new Error(getErrorMessage(error, 'Could not save the face mesh overlay.'));
+  }
+}
+
+export async function deleteFaceMeshFile(uri: string): Promise<void> {
+  try {
+    const file = new File(uri);
+    if (file.exists) {
+      file.delete();
+    }
+  } catch {
+    // File may already be gone
+  }
 }
 
 export async function copyPhotoToProjectStorage(
@@ -169,6 +217,14 @@ export async function writeFileBytes(uri: string, bytes: Uint8Array): Promise<vo
 
 export function isDatePhotoFileName(fileName: string): boolean {
   return DATE_PHOTO_FILE_REGEX.test(fileName);
+}
+
+export function isDateMeshFileName(fileName: string): boolean {
+  return DATE_MESH_FILE_REGEX.test(fileName);
+}
+
+export function getMeshFileNameForDate(date: string): string {
+  return `${date}.mesh.json`;
 }
 
 export function getProjectsRootDirectory(): Directory {

@@ -29,6 +29,8 @@ import {
   ensureExportDirectory,
   ensureProjectPhotosDirectory,
   fileExists,
+  getMeshFileNameForDate,
+  getProjectFaceMeshFilePath,
   getProjectPhotoFilePath,
   readFileBytes,
   writeFileBytes,
@@ -78,11 +80,29 @@ export async function exportProjectBackup(projectId: string): Promise<string> {
       const bytes = await readFileBytes(photo.uri);
       zip.file(`photos/${fileName}`, bytes);
 
+      let meshFileName: string | undefined;
+      if (photo.faceMeshUri && (await fileExists(photo.faceMeshUri))) {
+        meshFileName = getMeshFileNameForDate(photo.date);
+        // Avoid collisions if multiple photos share a date somehow.
+        let meshCandidate = meshFileName;
+        let meshCounter = 2;
+        while (usedNames.has(meshCandidate)) {
+          meshCandidate = `${photo.date}-${meshCounter}.mesh.json`;
+          meshCounter += 1;
+        }
+        meshFileName = meshCandidate;
+        usedNames.add(meshFileName);
+
+        const meshBytes = await readFileBytes(photo.faceMeshUri);
+        zip.file(`photos/${meshFileName}`, meshBytes);
+      }
+
       manifestPhotos.push({
         id: photo.id,
         projectId: photo.projectId,
         date: photo.date,
         fileName,
+        ...(meshFileName ? { meshFileName } : {}),
         createdAt: photo.createdAt,
         updatedAt: photo.updatedAt,
         notes: photo.notes,
@@ -99,7 +119,7 @@ export async function exportProjectBackup(projectId: string): Promise<string> {
 
     const manifest: BackupManifest = {
       app: 'Progression',
-      backupVersion: 1,
+      backupVersion: 2,
       exportedAt: new Date().toISOString(),
       project: {
         id: project.id,
@@ -169,7 +189,7 @@ export async function validateBackupZip(zipUri: string): Promise<BackupValidatio
       errors.push('This does not look like a valid Progression backup.');
     }
 
-    if (manifest.backupVersion !== 1) {
+    if (manifest.backupVersion !== 1 && manifest.backupVersion !== 2) {
       errors.push('This backup uses an unsupported backup version.');
     }
 
@@ -197,6 +217,15 @@ export async function validateBackupZip(zipUri: string): Promise<BackupValidatio
         if (!photoFile) {
           errors.push(`Some photo files are missing from the backup (${photo.fileName}).`);
           break;
+        }
+        if (photo.meshFileName) {
+          const meshFile = zip.file(`photos/${photo.meshFileName}`);
+          if (!meshFile) {
+            errors.push(
+              `Some face mesh files are missing from the backup (${photo.meshFileName}).`
+            );
+            break;
+          }
         }
       }
     }
@@ -251,11 +280,23 @@ export async function importProjectBackup(zipUri: string): Promise<Project> {
       const destinationUri = await getProjectPhotoFilePath(newProject.id, item.date);
       await writeFileBytes(destinationUri, bytes);
 
+      let faceMeshUri: string | undefined;
+      if (item.meshFileName) {
+        const meshFile = zip.file(`photos/${item.meshFileName}`);
+        if (!meshFile) {
+          throw new Error('Some face mesh files are missing from the backup.');
+        }
+        const meshBytes = await meshFile.async('uint8array');
+        faceMeshUri = await getProjectFaceMeshFilePath(newProject.id, item.date);
+        await writeFileBytes(faceMeshUri, meshBytes);
+      }
+
       const photo: ProgressPhoto = {
         id: generateId(item.date),
         projectId: newProject.id,
         date: item.date,
         uri: destinationUri,
+        ...(faceMeshUri ? { faceMeshUri } : {}),
         createdAt: item.createdAt,
         updatedAt: item.updatedAt,
         notes: item.notes,

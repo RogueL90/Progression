@@ -3,6 +3,7 @@ import { Directory, File } from 'expo-file-system';
 import { readPhotosRaw, readProjectsRaw, writePhotosRaw } from '@/data/rawMetadataStorage';
 import type { ProgressPhoto } from '@/types/photo';
 import {
+  getMeshFileNameForDate,
   getProjectPhotosDirectoryForProject,
   getProjectsRootDirectory,
   isDatePhotoFileName,
@@ -59,12 +60,17 @@ export async function recoverOrphanedProjectPhotos(): Promise<number> {
         continue;
       }
 
+      const meshFileName = getMeshFileNameForDate(date);
+      const meshEntry = new File(photosDir, meshFileName);
+      const faceMeshUri = meshEntry.exists ? meshEntry.uri : undefined;
+
       const now = new Date().toISOString();
       recovered.push({
         id: generateRecoveredPhotoId(date),
         projectId,
         date,
         uri: photoEntry.uri,
+        ...(faceMeshUri ? { faceMeshUri } : {}),
         createdAt: now,
         updatedAt: now,
       });

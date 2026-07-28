@@ -1,5 +1,10 @@
 import type { ProgressPhoto } from '@/types/photo';
+import type { FaceMeshOverlay } from '@/types/faceMesh';
 import { createMetadataSnapshot } from '@/data/metadataSnapshotService';
+import {
+  deleteFaceMeshForPhoto,
+  saveFaceMeshOverlay,
+} from '@/data/faceMeshStorage';
 import {
   readPhotosRaw,
   writePhotosRaw,
@@ -7,8 +12,10 @@ import {
 import { sortPhotosByDateDesc } from '@/utils/date';
 import {
   copyPhotoToProjectStorage,
+  deleteFaceMeshFile,
   deletePhotoFile,
   fileExists,
+  getProjectFaceMeshFilePath,
 } from '@/utils/file';
 import { getErrorMessage } from '@/utils/errors';
 
@@ -45,6 +52,9 @@ async function savePhotoWithoutSnapshot(photo: ProgressPhoto): Promise<void> {
     const existing = photos[index];
     if (existing.uri !== photo.uri) {
       await deletePhotoFile(existing.uri);
+    }
+    if (existing.faceMeshUri && existing.faceMeshUri !== photo.faceMeshUri) {
+      await deleteFaceMeshFile(existing.faceMeshUri);
     }
     photos[index] = photo;
   } else {
@@ -139,6 +149,7 @@ export async function deletePhoto(
   const photo = photos.find((item) => item.id === photoId);
   if (photo) {
     await deletePhotoFile(photo.uri);
+    await deleteFaceMeshForPhoto(photo.faceMeshUri);
   }
 
   await writePhotosRaw(photos.filter((item) => item.id !== photoId));
@@ -157,6 +168,7 @@ export async function deletePhotosForProject(
 
   for (const photo of projectPhotos) {
     await deletePhotoFile(photo.uri);
+    await deleteFaceMeshForPhoto(photo.faceMeshUri);
   }
 
   await writePhotosRaw(photos.filter((photo) => photo.projectId !== projectId));
@@ -165,20 +177,38 @@ export async function deletePhotosForProject(
 export async function replacePhotoForDate(
   projectId: string,
   date: string,
-  tempUri: string
+  tempUri: string,
+  faceMesh: FaceMeshOverlay | null = null
 ): Promise<ProgressPhoto> {
   await createMetadataSnapshot();
 
   let permanentUri: string | null = null;
   let previousUri: string | null = null;
+  let faceMeshUri: string | undefined;
+  let previousFaceMeshUri: string | null = null;
+  let wroteNewMesh = false;
 
   try {
     const existing = (await readPhotosRaw()).find(
       (photo) => photo.projectId === projectId && photo.date === date
     );
     previousUri = existing?.uri ?? null;
+    previousFaceMeshUri = existing?.faceMeshUri ?? null;
 
     permanentUri = await copyPhotoToProjectStorage(tempUri, projectId, date);
+
+    if (faceMesh) {
+      faceMeshUri = await saveFaceMeshOverlay(projectId, date, faceMesh);
+      wroteNewMesh = true;
+    } else {
+      // Retake without a detected face should remove any prior mesh for this day.
+      const expectedMeshPath = await getProjectFaceMeshFilePath(projectId, date);
+      await deleteFaceMeshFile(expectedMeshPath);
+      if (previousFaceMeshUri && previousFaceMeshUri !== expectedMeshPath) {
+        await deleteFaceMeshFile(previousFaceMeshUri);
+      }
+      faceMeshUri = undefined;
+    }
 
     const now = new Date().toISOString();
     const photo: ProgressPhoto = {
@@ -186,6 +216,7 @@ export async function replacePhotoForDate(
       projectId,
       date,
       uri: permanentUri,
+      ...(faceMeshUri ? { faceMeshUri } : {}),
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
     };
@@ -204,6 +235,9 @@ export async function replacePhotoForDate(
   } catch (error) {
     if (permanentUri && permanentUri !== previousUri) {
       await deletePhotoFile(permanentUri);
+    }
+    if (wroteNewMesh && faceMeshUri && faceMeshUri !== previousFaceMeshUri) {
+      await deleteFaceMeshFile(faceMeshUri);
     }
 
     throw new Error(getErrorMessage(error, 'Could not save this photo. Please try again.'));

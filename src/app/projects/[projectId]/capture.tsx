@@ -1,15 +1,21 @@
 import { Ionicons } from '@expo/vector-icons';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useCameraPermission as useVisionCameraPermission } from 'react-native-vision-camera';
 
 import { CaptureGhostOverlay } from '@/components/CaptureGhostOverlay';
 import { CaptureGridOverlay } from '@/components/CaptureGridOverlay';
 import { CaptureSettingsSheet } from '@/components/CaptureSettingsSheet';
 import { CaptureShutterButton } from '@/components/CaptureShutterButton';
+import {
+  FaceMeshCaptureView,
+  type FaceMeshCaptureHandle,
+} from '@/components/FaceMeshCaptureView';
 import { PrimaryButton } from '@/components/PrimaryButton';
+import { isFaceProjectType } from '@/constants/projectTypes';
 import { theme } from '@/constants/theme';
 import { getLatestPhotoForProject, replacePhotoForDate } from '@/data/photoStorage';
 import { useCaptureSettings } from '@/hooks/useCaptureSettings';
@@ -34,12 +40,18 @@ export default function ProjectCaptureScreen() {
   const [settingsVisible, setSettingsVisible] = useState(false);
   const [latestPhoto, setLatestPhoto] = useState<ProgressPhoto | null>(null);
   const cameraRef = useRef<CameraView>(null);
+  const faceCaptureRef = useRef<FaceMeshCaptureHandle>(null);
   const [permission, requestPermission] = useCameraPermissions();
+  const {
+    hasPermission: visionHasPermission,
+    requestPermission: requestVisionPermission,
+  } = useVisionCameraPermission();
   const [cameraReady, setCameraReady] = useState(false);
   const [saving, setSaving] = useState(false);
   const { hasPhotoToday } = useTodayPhoto(projectId);
 
   const today = getTodayDateString();
+  const isFaceProject = project ? isFaceProjectType(project.type) : false;
 
   const refreshLatestPhoto = useCallback(async () => {
     if (!projectId) {
@@ -54,25 +66,47 @@ export default function ProjectCaptureScreen() {
   useFocusEffect(
     useCallback(() => {
       setIsFocused(true);
+      setCameraReady(false);
       void refreshLatestPhoto();
       return () => setIsFocused(false);
     }, [refreshLatestPhoto])
   );
 
+  useEffect(() => {
+    if (isFaceProject && !visionHasPermission) {
+      void requestVisionPermission();
+    }
+  }, [isFaceProject, visionHasPermission, requestVisionPermission]);
+
+  useEffect(() => {
+    setCameraReady(false);
+  }, [settings.showFaceMesh, isFaceProject]);
+
   const handleCapture = useCallback(async () => {
-    if (!cameraRef.current || !cameraReady || saving || !projectId) return;
+    if (!cameraReady || saving || !projectId || !project) return;
 
     try {
       setSaving(true);
-      const result = await cameraRef.current.takePictureAsync({
-        quality: 0.85,
-      });
 
-      if (!result?.uri) {
-        throw new Error('Could not capture photo. Please try again.');
+      if (isFaceProjectType(project.type)) {
+        const result = await faceCaptureRef.current?.takePicture();
+        if (!result?.uri) {
+          throw new Error('Could not capture photo. Please try again.');
+        }
+        await replacePhotoForDate(projectId, today, result.uri, result.faceMesh);
+      } else {
+        if (!cameraRef.current) return;
+        const result = await cameraRef.current.takePictureAsync({
+          quality: 0.85,
+        });
+
+        if (!result?.uri) {
+          throw new Error('Could not capture photo. Please try again.');
+        }
+
+        await replacePhotoForDate(projectId, today, result.uri);
       }
 
-      await replacePhotoForDate(projectId, today, result.uri);
       router.back();
     } catch (error) {
       setSaving(false);
@@ -81,9 +115,24 @@ export default function ProjectCaptureScreen() {
         getErrorMessage(error, 'Something went wrong while saving this photo.')
       );
     }
-  }, [cameraReady, saving, projectId, today, router]);
+  }, [cameraReady, saving, projectId, project, today, router]);
 
   const handleRequestPermission = useCallback(async () => {
+    if (isFaceProject) {
+      const result = await requestVisionPermission();
+      if (!result) {
+        Alert.alert(
+          'Camera access denied',
+          'Enable camera access in system settings to take progress photos.',
+          [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Open Settings', onPress: () => void Linking.openSettings() },
+          ]
+        );
+      }
+      return;
+    }
+
     const result = await requestPermission();
     if (!result?.granted && result?.canAskAgain === false) {
       Alert.alert(
@@ -95,7 +144,7 @@ export default function ProjectCaptureScreen() {
         ]
       );
     }
-  }, [requestPermission]);
+  }, [isFaceProject, requestVisionPermission, requestPermission]);
 
   const hasGhostPhoto = latestPhoto !== null;
   const showGhost = settings.showGhost && hasGhostPhoto && latestPhoto?.uri;
@@ -117,7 +166,10 @@ export default function ProjectCaptureScreen() {
     );
   }
 
-  if (!permission) {
+  const permissionGranted = isFaceProject ? visionHasPermission : permission?.granted;
+  const permissionLoading = isFaceProject ? false : !permission;
+
+  if (permissionLoading) {
     return (
       <View style={styles.centered}>
         <ActivityIndicator color={theme.accent} />
@@ -125,24 +177,16 @@ export default function ProjectCaptureScreen() {
     );
   }
 
-  if (!permission.granted) {
-    const permanentlyDenied = permission.canAskAgain === false;
-
+  if (!permissionGranted) {
     return (
       <View style={styles.centered}>
         <Text style={styles.message}>
           Camera access is required to capture progress photos.
         </Text>
         <Text style={styles.submessage}>
-          {permanentlyDenied
-            ? 'Camera access is turned off. Enable it in system settings to take photos.'
-            : 'Your photos are stored only on this device and never uploaded.'}
+          Your photos are stored only on this device and never uploaded.
         </Text>
-        {permanentlyDenied ? (
-          <PrimaryButton title="Open Settings" onPress={() => void Linking.openSettings()} />
-        ) : (
-          <PrimaryButton title="Grant Camera Access" onPress={handleRequestPermission} />
-        )}
+        <PrimaryButton title="Grant Camera Access" onPress={handleRequestPermission} />
         <PrimaryButton
           title="Go Back"
           variant="secondary"
@@ -155,7 +199,17 @@ export default function ProjectCaptureScreen() {
 
   return (
     <View style={styles.container}>
-      {isFocused && (
+      {isFocused && isFaceProject && (
+        <FaceMeshCaptureView
+          ref={faceCaptureRef}
+          facing={getCameraFacing(project.type)}
+          isActive={isFocused}
+          showFaceMesh={settings.showFaceMesh}
+          onCameraReadyChange={setCameraReady}
+        />
+      )}
+
+      {isFocused && !isFaceProject && (
         <CameraView
           ref={cameraRef}
           style={styles.camera}
@@ -205,6 +259,7 @@ export default function ProjectCaptureScreen() {
         visible={settingsVisible}
         settings={settings}
         hasGhostPhoto={hasGhostPhoto}
+        showFaceMeshOption={isFaceProject}
         onClose={() => setSettingsVisible(false)}
         onUpdate={(updates) => {
           void updateSettings(updates);

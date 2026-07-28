@@ -3,6 +3,8 @@ export type ProgressPhoto = {
   projectId: string;
   date: string;
   uri: string;
+  /** Optional sidecar face mesh overlay JSON path */
+  faceMeshUri?: string;
   createdAt: string;
   updatedAt?: string;
   notes?: string;

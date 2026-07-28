@@ -12,9 +12,11 @@
     },
     "ios": {
       "supportsTablet": true,
+      "deploymentTarget": "15.5",
       "infoPlist": {
         "NSCameraUsageDescription": "Progression needs camera access to capture progress photos. Photos are stored only on this device."
-      }
+      },
+      "bundleIdentifier": "com.anonymous.progression"
     },
     "android": {
       "adaptiveIcon": {
@@ -23,21 +25,40 @@
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO"
+      ],
+      "package": "com.anonymous.progression"
     },
     "web": {
       "favicon": "./assets/favicon.png"
     },
     "plugins": [
       "expo-router",
+      "expo-dev-client",
       [
         "expo-camera",
         {
           "cameraPermission": "Progression needs camera access to capture progress photos. Photos are stored only on this device."
         }
       ],
-      "expo-notifications",
-      "@react-native-community/datetimepicker"
+      [
+        "react-native-vision-camera",
+        {
+          "cameraPermissionText": "Progression needs camera access to capture progress photos. Photos are stored only on this device."
+        }
+      ],
+      "@react-native-community/datetimepicker",
+      [
+        "expo-build-properties",
+        {
+          "ios": {
+            "deploymentTarget": "15.5"
+          }
+        }
+      ]
     ]
   }
 }
