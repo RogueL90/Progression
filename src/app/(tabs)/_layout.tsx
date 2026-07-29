@@ -8,6 +8,10 @@ export default function TabLayout() {
     <Tabs
       screenOptions={{
         headerShown: false,
+        sceneStyle: {
+          flex: 1,
+          backgroundColor: theme.background,
+        },
         tabBarStyle: {
           backgroundColor: theme.card,
           borderTopColor: theme.cardBorder,

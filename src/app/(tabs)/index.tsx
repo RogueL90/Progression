@@ -1,14 +1,25 @@
+import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect, useRouter } from 'expo-router';
-import { useCallback, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
   FlatList,
   Modal,
+  Pressable,
   StyleSheet,
   Text,
+  TextInput,
   View,
+  type NativeScrollEvent,
+  type NativeSyntheticEvent,
 } from 'react-native';
+import Animated, {
+  Extrapolation,
+  interpolate,
+  useAnimatedStyle,
+  useSharedValue,
+} from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { EmptyState } from '@/components/EmptyState';
@@ -43,6 +54,24 @@ type RecoveryInfo = {
   photoCount: number;
 };
 
+/** Search box collapses after list content below it has scrolled, then the large title collapses. */
+const SEARCH_HEIGHT = 44;
+const SEARCH_MARGIN = theme.spacing.md;
+const SEARCH_BOX_COLLAPSE_DISTANCE = SEARCH_HEIGHT + SEARCH_MARGIN;
+/** Text finishes fading before the box shrinks below this height. */
+const SEARCH_TEXT_MIN_HEIGHT = 28;
+
+/** After search is gone, large title scrolls away into the toolbar. */
+const TITLE_HEIGHT = 44;
+const TITLE_MARGIN = theme.spacing.md;
+const TITLE_COLLAPSE_DISTANCE = TITLE_HEIGHT + TITLE_MARGIN;
+
+const EXPANDED_HEADER_HEIGHT = SEARCH_BOX_COLLAPSE_DISTANCE + TITLE_COLLAPSE_DISTANCE;
+
+/** Pull-down overscroll: title scales up to this, over this many points of pull. */
+const TITLE_MAX_SCALE = 1.1;
+const OVERSCROLL_SCALE_DISTANCE = 140;
+
 export default function ProjectListScreen() {
   const router = useRouter();
   const [items, setItems] = useState<ProjectListItem[]>([]);
@@ -56,49 +85,99 @@ export default function ProjectListScreen() {
   const [recoveryInfo, setRecoveryInfo] = useState<RecoveryInfo | null>(null);
   const [showRecoveryCard, setShowRecoveryCard] = useState(true);
   const [restoringSnapshot, setRestoringSnapshot] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [scrollIndicatorTop, setScrollIndicatorTop] = useState(EXPANDED_HEADER_HEIGHT);
+  const hasLoadedRef = useRef(false);
+  const contentPassHeightRef = useRef(0);
+  const scrollY = useSharedValue(0);
+  /** List content below the search can scroll this far before search starts collapsing. */
+  const contentScrollBeforeSearch = useSharedValue(0);
+
+  const updateScrollIndicatorInset = useCallback((offsetY: number, contentPass: number) => {
+    if (offsetY < 0) {
+      // Keep the indicator below the pulled-down header; the track shrinks as you overscroll.
+      const next = EXPANDED_HEADER_HEIGHT + Math.round(-offsetY);
+      setScrollIndicatorTop((prev) => (prev === next ? prev : next));
+      return;
+    }
+
+    const searchStart = contentPass;
+    const searchEnd = contentPass + SEARCH_BOX_COLLAPSE_DISTANCE;
+    const titleEnd = searchEnd + TITLE_COLLAPSE_DISTANCE;
+
+    let searchHeight = SEARCH_BOX_COLLAPSE_DISTANCE;
+    if (offsetY >= searchEnd) {
+      searchHeight = 0;
+    } else if (offsetY > searchStart) {
+      searchHeight =
+        SEARCH_BOX_COLLAPSE_DISTANCE *
+        (1 - (offsetY - searchStart) / SEARCH_BOX_COLLAPSE_DISTANCE);
+    }
+
+    let titleHeight = TITLE_COLLAPSE_DISTANCE;
+    if (offsetY >= titleEnd) {
+      titleHeight = 0;
+    } else if (offsetY > searchEnd) {
+      titleHeight =
+        TITLE_COLLAPSE_DISTANCE * (1 - (offsetY - searchEnd) / TITLE_COLLAPSE_DISTANCE);
+    }
+
+    const next = Math.max(0, Math.round(searchHeight + titleHeight));
+    setScrollIndicatorTop((prev) => (prev === next ? prev : next));
+  }, []);
 
   const loadItems = useCallback(async () => {
-    setLoading(true);
-    const projects = await getAllProjects();
-    const enriched = await Promise.all(
-      projects.map(async (project) => {
-        const stats = await getStatsForProject(project.id);
-        return {
-          ...project,
-          totalPhotos: stats.totalPhotos,
-          latestPhotoUri: project.coverPhotoUri,
-          latestPhotoDate: stats.latestPhotoDate ?? undefined,
-        };
-      })
-    );
-    setItems(enriched);
+    const showLoading = !hasLoadedRef.current;
+    if (showLoading) {
+      setLoading(true);
+    }
 
-    const [metadataHealth, recoverable] = await Promise.all([
-      getMetadataHealth(),
-      hasRecoverableMetadataSnapshot(),
-    ]);
+    try {
+      const projects = await getAllProjects();
+      const enriched = await Promise.all(
+        projects.map(async (project) => {
+          const stats = await getStatsForProject(project.id);
+          return {
+            ...project,
+            totalPhotos: stats.totalPhotos,
+            latestPhotoUri: project.coverPhotoUri,
+            latestPhotoDate: stats.latestPhotoDate ?? undefined,
+          };
+        })
+      );
+      setItems(enriched);
 
-    if (
-      recoverable &&
-      (enriched.length === 0 ||
-        metadataHealth.projectsCorrupted ||
-        metadataHealth.photosCorrupted)
-    ) {
-      const snapshotInfo = await getLatestSnapshotFileHealth();
-      if (snapshotInfo.createdAt) {
-        setRecoveryInfo({
-          snapshotCreatedAt: snapshotInfo.createdAt,
-          projectCount: snapshotInfo.projectCount,
-          photoCount: snapshotInfo.photoCount,
-        });
+      const [metadataHealth, recoverable] = await Promise.all([
+        getMetadataHealth(),
+        hasRecoverableMetadataSnapshot(),
+      ]);
+
+      if (
+        recoverable &&
+        (enriched.length === 0 ||
+          metadataHealth.projectsCorrupted ||
+          metadataHealth.photosCorrupted)
+      ) {
+        const snapshotInfo = await getLatestSnapshotFileHealth();
+        if (snapshotInfo.createdAt) {
+          setRecoveryInfo({
+            snapshotCreatedAt: snapshotInfo.createdAt,
+            projectCount: snapshotInfo.projectCount,
+            photoCount: snapshotInfo.photoCount,
+          });
+        } else {
+          setRecoveryInfo(null);
+        }
       } else {
         setRecoveryInfo(null);
       }
-    } else {
-      setRecoveryInfo(null);
-    }
 
-    setLoading(false);
+      hasLoadedRef.current = true;
+    } finally {
+      if (showLoading) {
+        setLoading(false);
+      }
+    }
   }, []);
 
   useFocusEffect(
@@ -185,62 +264,245 @@ export default function ProjectListScreen() {
     }
   };
 
-  const importButton = (
-    <PrimaryButton
-      title={validating ? 'Validating...' : 'Import Backup'}
-      variant="secondary"
-      onPress={handleImportBackup}
-      loading={validating}
-      disabled={validating || importing}
-      style={styles.importButton}
+  const onScroll = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const offsetY = event.nativeEvent.contentOffset.y;
+    scrollY.value = offsetY;
+    updateScrollIndicatorInset(offsetY, contentPassHeightRef.current);
+  };
+
+  const collapsingHeaderStyle = useAnimatedStyle(() => {
+    // Pull the header down with top overscroll; native bounce returns it on release.
+    const pull = Math.max(-scrollY.value, 0);
+    return {
+      transform: [{ translateY: pull }],
+    };
+  });
+
+  const largeTitleClipStyle = useAnimatedStyle(() => {
+    const searchEnd =
+      contentScrollBeforeSearch.value + SEARCH_BOX_COLLAPSE_DISTANCE;
+    const pull = Math.max(-scrollY.value, 0);
+
+    // Shrink layout space 1:1 with scroll. Keep height fixed while overscrolling
+    // so scaling Projects doesn't change the gap above the search bar.
+    const collapsedHeight = interpolate(
+      scrollY.value,
+      [searchEnd, searchEnd + TITLE_COLLAPSE_DISTANCE],
+      [TITLE_COLLAPSE_DISTANCE, 0],
+      Extrapolation.CLAMP
+    );
+
+    return {
+      height: pull > 0 ? TITLE_COLLAPSE_DISTANCE : collapsedHeight,
+      overflow: pull > 0 ? ('visible' as const) : ('hidden' as const),
+    };
+  });
+
+  const largeTitleStyle = useAnimatedStyle(() => {
+    const searchEnd =
+      contentScrollBeforeSearch.value + SEARCH_BOX_COLLAPSE_DISTANCE;
+    // Move the title up 1:1 with scroll so it stays in sync with list content.
+    const scrolled = interpolate(
+      scrollY.value,
+      [searchEnd, searchEnd + TITLE_COLLAPSE_DISTANCE],
+      [0, TITLE_COLLAPSE_DISTANCE],
+      Extrapolation.CLAMP
+    );
+
+    return {
+      transform: [{ translateY: -scrolled }],
+    };
+  });
+
+  const largeTitleScaleStyle = useAnimatedStyle(() => {
+    const pull = Math.max(-scrollY.value, 0);
+    const scale = interpolate(
+      pull,
+      [0, OVERSCROLL_SCALE_DISTANCE],
+      [1, TITLE_MAX_SCALE],
+      Extrapolation.CLAMP
+    );
+
+    // Scale upward from the bottom edge so spacing above the search bar stays fixed.
+    return {
+      transform: [{ scale }],
+      transformOrigin: 'left bottom',
+    };
+  });
+
+  const searchBarStyle = useAnimatedStyle(() => {
+    const contentEnd = contentScrollBeforeSearch.value;
+    const boxEnd = contentEnd + SEARCH_BOX_COLLAPSE_DISTANCE;
+
+    const collapse = interpolate(
+      scrollY.value,
+      [contentEnd, boxEnd],
+      [0, 1],
+      Extrapolation.CLAMP
+    );
+
+    return {
+      height: interpolate(collapse, [0, 1], [SEARCH_HEIGHT, 0], Extrapolation.CLAMP),
+      marginBottom: interpolate(collapse, [0, 1], [SEARCH_MARGIN, 0], Extrapolation.CLAMP),
+      overflow: 'hidden' as const,
+    };
+  });
+
+  const searchContentStyle = useAnimatedStyle(() => {
+    const contentEnd = contentScrollBeforeSearch.value;
+    const boxEnd = contentEnd + SEARCH_BOX_COLLAPSE_DISTANCE;
+    const collapse = interpolate(
+      scrollY.value,
+      [contentEnd, boxEnd],
+      [0, 1],
+      Extrapolation.CLAMP
+    );
+    const boxHeight = interpolate(
+      collapse,
+      [0, 1],
+      [SEARCH_HEIGHT, 0],
+      Extrapolation.CLAMP
+    );
+
+    // Fade text out while the box is still tall enough to hold it.
+    return {
+      opacity: interpolate(
+        boxHeight,
+        [SEARCH_HEIGHT, SEARCH_TEXT_MIN_HEIGHT],
+        [1, 0],
+        Extrapolation.CLAMP
+      ),
+    };
+  });
+
+  const smallTitleStyle = useAnimatedStyle(() => {
+    const searchEnd = contentScrollBeforeSearch.value + SEARCH_BOX_COLLAPSE_DISTANCE;
+    return {
+      opacity: interpolate(
+        scrollY.value,
+        [searchEnd + TITLE_COLLAPSE_DISTANCE * 0.35, searchEnd + TITLE_COLLAPSE_DISTANCE],
+        [0, 1],
+        Extrapolation.CLAMP
+      ),
+    };
+  });
+
+  const importDisabled = validating || importing;
+  const normalizedQuery = searchQuery.trim().toLowerCase();
+  const filteredItems = normalizedQuery
+    ? items.filter((item) => item.name.toLowerCase().includes(normalizedQuery))
+    : items;
+
+  const listHeader = (
+    <View
+      style={styles.listHeader}
+      onLayout={(event) => {
+        const height = event.nativeEvent.layout.height;
+        contentPassHeightRef.current = height;
+        contentScrollBeforeSearch.value = height;
+      }}
+    >
+      <Text style={styles.subtitle}>Track visual progress over time.</Text>
+      <Text style={styles.privacy}>Your photos stay on this device.</Text>
+      {showRecoveryCard && recoveryInfo ? (
+        <MetadataRecoveryCard
+          snapshotCreatedAt={recoveryInfo.snapshotCreatedAt}
+          projectCount={recoveryInfo.projectCount}
+          photoCount={recoveryInfo.photoCount}
+          onRestoreLatest={() => {
+            void handleRestoreSnapshot();
+          }}
+          onDismiss={() => setShowRecoveryCard(false)}
+        />
+      ) : null}
+      {restoringSnapshot ? (
+        <ActivityIndicator color={theme.accent} style={styles.restoreSpinner} />
+      ) : null}
+    </View>
+  );
+
+  const listEmpty = loading ? (
+    <View style={styles.centered}>
+      <ActivityIndicator color={theme.accent} size="large" />
+    </View>
+  ) : items.length === 0 ? (
+    <EmptyState
+      title="No projects yet"
+      message="Create your first progress project to start tracking change over time."
+    />
+  ) : (
+    <EmptyState
+      title="No matching projects"
+      message="Try a different search term."
     />
   );
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
-      <View style={styles.header}>
-        <Text style={styles.title}>Projects</Text>
-        <Text style={styles.subtitle}>Track visual progress over time.</Text>
-        <Text style={styles.privacy}>Your photos stay on this device.</Text>
-        <Text style={styles.backupNote}>
-          Your progress is yours. Export a backup anytime and restore it later.
-        </Text>
-        {showRecoveryCard && recoveryInfo ? (
-          <MetadataRecoveryCard
-            snapshotCreatedAt={recoveryInfo.snapshotCreatedAt}
-            projectCount={recoveryInfo.projectCount}
-            photoCount={recoveryInfo.photoCount}
-            onRestoreLatest={() => {
-              void handleRestoreSnapshot();
+      <View style={styles.toolbar}>
+        <Animated.Text
+          style={[styles.smallTitle, smallTitleStyle]}
+          numberOfLines={1}
+          pointerEvents="none"
+        >
+          Projects
+        </Animated.Text>
+        <View style={styles.headerActions}>
+          <Pressable
+            onPress={() => {
+              void handleImportBackup();
             }}
-            onDismiss={() => setShowRecoveryCard(false)}
-          />
-        ) : null}
+            disabled={importDisabled}
+            hitSlop={10}
+            style={styles.headerIconButton}
+            accessibilityRole="button"
+            accessibilityLabel="Import backup"
+          >
+            {validating ? (
+              <ActivityIndicator color={theme.text} size="small" />
+            ) : (
+              <Ionicons
+                name="cloud-upload-outline"
+                size={24}
+                color={importDisabled ? theme.textMuted : theme.text}
+              />
+            )}
+          </Pressable>
+          <Pressable
+            onPress={() => {}}
+            hitSlop={10}
+            style={styles.editButton}
+            accessibilityRole="button"
+            accessibilityLabel="Edit"
+          >
+            <Text style={styles.editButtonText}>Edit</Text>
+          </Pressable>
+        </View>
       </View>
 
-      {loading ? (
-        <View style={styles.centered}>
-          <ActivityIndicator color={theme.accent} size="large" />
-        </View>
-      ) : items.length === 0 ? (
-        <View style={styles.emptyContainer}>
-          <EmptyState
-            title="No projects yet"
-            message="Create your first progress project to start tracking change over time."
-            actionLabel="New Project"
-            onAction={() => router.push('/projects/new')}
-          />
-          {importButton}
-          {restoringSnapshot ? (
-            <ActivityIndicator color={theme.accent} style={styles.restoreSpinner} />
-          ) : null}
-        </View>
-      ) : (
+      <View style={styles.listContainer}>
         <FlatList
           style={styles.list}
-          contentContainerStyle={styles.listContent}
-          data={items}
+          contentContainerStyle={[
+            styles.listContent,
+            { paddingTop: EXPANDED_HEADER_HEIGHT },
+            filteredItems.length === 0 ? styles.listContentEmpty : null,
+          ]}
+          data={loading ? [] : filteredItems}
           keyExtractor={(item) => item.id}
+          keyboardShouldPersistTaps="handled"
+          alwaysBounceVertical
+          bounces
+          bouncesZoom={false}
+          automaticallyAdjustsScrollIndicatorInsets={false}
+          contentInsetAdjustmentBehavior="never"
+          scrollIndicatorInsets={{ top: scrollIndicatorTop, bottom: 0 }}
+          indicatorStyle="white"
+          showsVerticalScrollIndicator
+          onScroll={onScroll}
+          scrollEventThrottle={16}
+          ListHeaderComponent={listHeader}
+          ListEmptyComponent={listEmpty}
           renderItem={({ item }) => (
             <ProjectCard
               project={item}
@@ -250,20 +512,51 @@ export default function ProjectListScreen() {
               onPress={() => router.push(`/projects/${item.id}`)}
             />
           )}
-          ListFooterComponent={
-            <View style={styles.footerButtons}>
-              <PrimaryButton
-                title="New Project"
-                onPress={() => router.push('/projects/new')}
-              />
-              {importButton}
-              {restoringSnapshot ? (
-                <ActivityIndicator color={theme.accent} style={styles.restoreSpinner} />
-              ) : null}
-            </View>
-          }
         />
-      )}
+
+        <Animated.View
+          style={[styles.collapsingHeader, collapsingHeaderStyle]}
+          pointerEvents="box-none"
+        >
+          <Animated.View style={[styles.largeTitleClip, largeTitleClipStyle]}>
+            <Animated.View style={largeTitleStyle}>
+              <Animated.Text
+                style={[styles.largeTitle, largeTitleScaleStyle]}
+                numberOfLines={1}
+              >
+                Projects
+              </Animated.Text>
+              <View style={styles.largeTitleSpacer} />
+            </Animated.View>
+          </Animated.View>
+          <Animated.View style={[styles.searchBar, searchBarStyle]}>
+            <Animated.View style={[styles.searchContent, searchContentStyle]}>
+              <Ionicons name="search" size={18} color={theme.textMuted} />
+              <TextInput
+                style={styles.searchInput}
+                value={searchQuery}
+                onChangeText={setSearchQuery}
+                placeholder="Search Project"
+                placeholderTextColor={theme.textMuted}
+                autoCapitalize="none"
+                autoCorrect={false}
+                clearButtonMode="while-editing"
+                returnKeyType="search"
+                accessibilityLabel="Search projects"
+              />
+            </Animated.View>
+          </Animated.View>
+        </Animated.View>
+      </View>
+
+      <Pressable
+        style={({ pressed }) => [styles.fab, pressed && styles.fabPressed]}
+        onPress={() => router.push('/projects/new')}
+        accessibilityRole="button"
+        accessibilityLabel="New project"
+      >
+        <Ionicons name="add" size={32} color={theme.text} />
+      </Pressable>
 
       <Modal
         visible={previewVisible}
@@ -312,15 +605,110 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: theme.background,
   },
-  header: {
-    padding: theme.spacing.lg,
-    paddingBottom: theme.spacing.md,
+  toolbar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    paddingHorizontal: theme.spacing.lg,
+    paddingTop: theme.spacing.sm,
+    paddingBottom: theme.spacing.sm,
+    backgroundColor: theme.background,
+    zIndex: 2,
+    minHeight: 44,
   },
-  title: {
+  smallTitle: {
+    position: 'absolute',
+    left: theme.spacing.lg,
+    right: 120,
+    color: theme.text,
+    fontSize: 17,
+    fontWeight: '600',
+  },
+  listContainer: {
+    flex: 1,
+  },
+  collapsingHeader: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    paddingHorizontal: theme.spacing.lg,
+    backgroundColor: theme.background,
+    zIndex: 1,
+  },
+  largeTitleClip: {
+    overflow: 'hidden',
+  },
+  largeTitle: {
     color: theme.text,
     fontSize: 32,
     fontWeight: '700',
-    marginBottom: theme.spacing.xs,
+    height: TITLE_HEIGHT,
+    lineHeight: TITLE_HEIGHT,
+    includeFontPadding: false,
+  },
+  largeTitleSpacer: {
+    height: TITLE_MARGIN,
+  },
+  headerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+  },
+  headerIconButton: {
+    padding: theme.spacing.xs,
+    minWidth: 32,
+    minHeight: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  editButton: {
+    paddingVertical: theme.spacing.xs,
+    paddingHorizontal: theme.spacing.sm,
+    minHeight: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  editButtonText: {
+    color: theme.accent,
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  searchBar: {
+    backgroundColor: theme.card,
+    borderWidth: 1,
+    borderColor: theme.cardBorder,
+    borderRadius: theme.radius.md,
+    justifyContent: 'center',
+    overflow: 'hidden',
+  },
+  searchContent: {
+    height: SEARCH_HEIGHT,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+    paddingHorizontal: theme.spacing.md,
+  },
+  searchInput: {
+    flex: 1,
+    color: theme.text,
+    fontSize: 16,
+    paddingVertical: 0,
+    margin: 0,
+  },
+  list: {
+    flex: 1,
+  },
+  listContent: {
+    paddingHorizontal: theme.spacing.md,
+    paddingBottom: theme.spacing.xl * 3,
+  },
+  listContentEmpty: {
+    flexGrow: 1,
+  },
+  listHeader: {
+    paddingHorizontal: theme.spacing.sm,
+    paddingBottom: theme.spacing.md,
   },
   subtitle: {
     color: theme.textMuted,
@@ -331,38 +719,34 @@ const styles = StyleSheet.create({
     color: theme.textMuted,
     fontSize: 14,
   },
-  backupNote: {
-    color: theme.textMuted,
-    fontSize: 13,
+  restoreSpinner: {
     marginTop: theme.spacing.sm,
-    lineHeight: 18,
-  },
-  list: {
-    flex: 1,
-  },
-  listContent: {
-    padding: theme.spacing.md,
-    paddingTop: 0,
-    paddingBottom: theme.spacing.md,
   },
   centered: {
     flex: 1,
+    minHeight: 220,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  emptyContainer: {
-    flex: 1,
-    paddingHorizontal: theme.spacing.md,
+  fab: {
+    position: 'absolute',
+    right: theme.spacing.lg,
+    bottom: theme.spacing.lg,
+    width: 64,
+    height: 64,
+    borderRadius: theme.radius.full,
+    backgroundColor: theme.accent,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.35,
+    shadowRadius: 8,
+    elevation: 8,
   },
-  footerButtons: {
-    gap: theme.spacing.sm,
-    marginTop: theme.spacing.sm,
-  },
-  importButton: {
-    marginTop: theme.spacing.sm,
-  },
-  restoreSpinner: {
-    marginTop: theme.spacing.sm,
+  fabPressed: {
+    opacity: 0.85,
+    transform: [{ scale: 0.96 }],
   },
   modalOverlay: {
     flex: 1,
