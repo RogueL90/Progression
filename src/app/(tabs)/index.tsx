@@ -1,6 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect, useRouter } from 'expo-router';
-import { useCallback, useRef, useState } from 'react';
+import { memo, useCallback, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -11,6 +11,7 @@ import {
   Text,
   TextInput,
   View,
+  type ListRenderItem,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
 } from 'react-native';
@@ -21,6 +22,7 @@ import Animated, {
   useSharedValue,
 } from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import type Swipeable from 'react-native-gesture-handler/Swipeable';
 
 import { EmptyState } from '@/components/EmptyState';
 import { ImportPreviewCard } from '@/components/ImportPreviewCard';
@@ -28,6 +30,8 @@ import { MetadataRecoveryCard } from '@/components/MetadataRecoveryCard';
 import { PrimaryButton } from '@/components/PrimaryButton';
 import { ProjectCard } from '@/components/ProjectCard';
 import { theme } from '@/constants/theme';
+import { useProjectsTitleTransition } from '@/context/ProjectsTitleTransition';
+import { rememberProjectName } from '@/data/projectNameCache';
 import { importProjectBackup, validateBackupZip } from '@/data/backupService';
 import { getMetadataHealth } from '@/data/metadataHealth';
 import {
@@ -35,7 +39,11 @@ import {
   hasRecoverableMetadataSnapshot,
   restoreMetadataFromLatestSnapshot,
 } from '@/data/metadataSnapshotService';
-import { getAllProjects } from '@/data/projectStorage';
+import {
+  deleteProject,
+  getAllProjects,
+  updateProject,
+} from '@/data/projectStorage';
 import { getStatsForProject } from '@/data/stats';
 import type { BackupManifest } from '@/types/backup';
 import type { Project } from '@/types/project';
@@ -47,6 +55,33 @@ type ProjectListItem = Project & {
   latestPhotoUri?: string;
   latestPhotoDate?: string;
 };
+
+const ProjectListRow = memo(function ProjectListRow({
+  item,
+  onPress,
+  onRename,
+  onDelete,
+  onSwipeableOpen,
+}: {
+  item: ProjectListItem;
+  onPress: (item: ProjectListItem) => void;
+  onRename: (item: ProjectListItem) => void;
+  onDelete: (item: ProjectListItem, onCancel: () => void) => void;
+  onSwipeableOpen: (ref: Swipeable) => void;
+}) {
+  return (
+    <ProjectCard
+      project={item}
+      totalPhotos={item.totalPhotos}
+      latestPhotoUri={item.latestPhotoUri}
+      latestPhotoDate={item.latestPhotoDate}
+      onPress={() => onPress(item)}
+      onRename={() => onRename(item)}
+      onDelete={(onCancel) => onDelete(item, onCancel)}
+      onSwipeableOpen={onSwipeableOpen}
+    />
+  );
+});
 
 type RecoveryInfo = {
   snapshotCreatedAt: string;
@@ -74,6 +109,14 @@ const OVERSCROLL_SCALE_DISTANCE = 140;
 
 export default function ProjectListScreen() {
   const router = useRouter();
+  const {
+    titlesHidden,
+    openProject,
+    registerLargeLayout,
+    registerSmallLayout,
+    setTitleMode,
+    resetToIdle,
+  } = useProjectsTitleTransition();
   const [items, setItems] = useState<ProjectListItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [importing, setImporting] = useState(false);
@@ -87,8 +130,15 @@ export default function ProjectListScreen() {
   const [restoringSnapshot, setRestoringSnapshot] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [scrollIndicatorTop, setScrollIndicatorTop] = useState(EXPANDED_HEADER_HEIGHT);
+  const [renameTarget, setRenameTarget] = useState<ProjectListItem | null>(null);
+  const [renameValue, setRenameValue] = useState('');
+  const [renaming, setRenaming] = useState(false);
   const hasLoadedRef = useRef(false);
   const contentPassHeightRef = useRef(0);
+  const openSwipeableRef = useRef<Swipeable | null>(null);
+  const largeTitleMeasureRef = useRef<View>(null);
+  const smallTitleMeasureRef = useRef<View>(null);
+  const titleModeRef = useRef<'large' | 'small'>('large');
   const scrollY = useSharedValue(0);
   /** List content below the search can scroll this far before search starts collapsing. */
   const contentScrollBeforeSearch = useSharedValue(0);
@@ -182,8 +232,9 @@ export default function ProjectListScreen() {
 
   useFocusEffect(
     useCallback(() => {
+      resetToIdle();
       void loadItems();
-    }, [loadItems])
+    }, [loadItems, resetToIdle])
   );
 
   const resetImportPreview = () => {
@@ -264,10 +315,148 @@ export default function ProjectListScreen() {
     }
   };
 
+  const handleRenameProject = useCallback((item: ProjectListItem) => {
+    setRenameTarget(item);
+    setRenameValue(item.name);
+  }, []);
+
+  const confirmRenameProject = async () => {
+    if (!renameTarget) {
+      return;
+    }
+
+    const nextName = renameValue.trim();
+    if (!nextName) {
+      Alert.alert('Name required', 'Project name cannot be empty.');
+      return;
+    }
+
+    try {
+      setRenaming(true);
+      await updateProject(renameTarget.id, { name: nextName });
+      setRenameTarget(null);
+      setRenameValue('');
+      await loadItems();
+    } catch (error) {
+      Alert.alert(
+        'Rename failed',
+        getErrorMessage(error, 'Could not rename this project.')
+      );
+    } finally {
+      setRenaming(false);
+    }
+  };
+
+  const handleDeleteProject = useCallback(
+    (item: ProjectListItem, onCancel: () => void) => {
+      Alert.alert(
+        'Delete this project?',
+        'This will delete the project and all of its photos from this device.',
+        [
+          {
+            text: 'Cancel',
+            style: 'cancel',
+            onPress: onCancel,
+          },
+          {
+            text: 'Delete Project',
+            style: 'destructive',
+            onPress: () => {
+              void (async () => {
+                try {
+                  await deleteProject(item.id);
+                  await loadItems();
+                } catch (error) {
+                  onCancel();
+                  Alert.alert(
+                    'Delete failed',
+                    getErrorMessage(error, 'Could not delete this project.')
+                  );
+                }
+              })();
+            },
+          },
+        ],
+        { cancelable: true, onDismiss: onCancel }
+      );
+    },
+    [loadItems]
+  );
+
+  const handleSwipeableOpen = useCallback((ref: Swipeable) => {
+    if (openSwipeableRef.current && openSwipeableRef.current !== ref) {
+      openSwipeableRef.current.close();
+    }
+    openSwipeableRef.current = ref;
+  }, []);
+
+  const handleOpenProject = useCallback(
+    (item: ProjectListItem) => {
+      const mode = titleModeRef.current;
+      setTitleMode(mode);
+      rememberProjectName(item.id, item.name);
+      const measureRef =
+        mode === 'small' ? smallTitleMeasureRef : largeTitleMeasureRef;
+
+      const push = () => openProject(item.id);
+
+      if (!measureRef.current) {
+        push();
+        return;
+      }
+
+      measureRef.current.measureInWindow((x, y, width, height) => {
+        if (width > 0 && height > 0) {
+          const layout = { x, y, width, height };
+          if (mode === 'small') {
+            registerSmallLayout(layout);
+          } else {
+            registerLargeLayout(layout);
+          }
+        }
+        push();
+      });
+    },
+    [
+      openProject,
+      registerLargeLayout,
+      registerSmallLayout,
+      setTitleMode,
+    ]
+  );
+
+  const renderProjectItem = useCallback<ListRenderItem<ProjectListItem>>(
+    ({ item }) => (
+      <ProjectListRow
+        item={item}
+        onPress={handleOpenProject}
+        onRename={handleRenameProject}
+        onDelete={handleDeleteProject}
+        onSwipeableOpen={handleSwipeableOpen}
+      />
+    ),
+    [handleDeleteProject, handleOpenProject, handleRenameProject, handleSwipeableOpen]
+  );
+
   const onScroll = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
     const offsetY = event.nativeEvent.contentOffset.y;
     scrollY.value = offsetY;
     updateScrollIndicatorInset(offsetY, contentPassHeightRef.current);
+
+    // Don't update mode while the overlay owns the title — avoids mid-transition churn.
+    if (titlesHidden) {
+      return;
+    }
+
+    const searchEnd =
+      contentPassHeightRef.current + SEARCH_BOX_COLLAPSE_DISTANCE;
+    // Match when the small toolbar title is mostly visible.
+    const nextMode =
+      offsetY >= searchEnd + TITLE_COLLAPSE_DISTANCE * 0.65 ? 'small' : 'large';
+    if (titleModeRef.current !== nextMode) {
+      titleModeRef.current = nextMode;
+      setTitleMode(nextMode);
+    }
   };
 
   const collapsingHeaderStyle = useAnimatedStyle(() => {
@@ -440,13 +629,19 @@ export default function ProjectListScreen() {
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       <View style={styles.toolbar}>
-        <Animated.Text
-          style={[styles.smallTitle, smallTitleStyle]}
-          numberOfLines={1}
+        <View
+          ref={smallTitleMeasureRef}
+          style={[styles.smallTitleMeasure, titlesHidden && styles.titleHidden]}
           pointerEvents="none"
+          collapsable={false}
         >
-          Projects
-        </Animated.Text>
+          <Animated.Text
+            style={[styles.smallTitle, smallTitleStyle]}
+            numberOfLines={1}
+          >
+            Projects
+          </Animated.Text>
+        </View>
         <View style={styles.headerActions}>
           <Pressable
             onPress={() => {
@@ -503,15 +698,7 @@ export default function ProjectListScreen() {
           scrollEventThrottle={16}
           ListHeaderComponent={listHeader}
           ListEmptyComponent={listEmpty}
-          renderItem={({ item }) => (
-            <ProjectCard
-              project={item}
-              totalPhotos={item.totalPhotos}
-              latestPhotoUri={item.latestPhotoUri}
-              latestPhotoDate={item.latestPhotoDate}
-              onPress={() => router.push(`/projects/${item.id}`)}
-            />
-          )}
+          renderItem={renderProjectItem}
         />
 
         <Animated.View
@@ -520,12 +707,18 @@ export default function ProjectListScreen() {
         >
           <Animated.View style={[styles.largeTitleClip, largeTitleClipStyle]}>
             <Animated.View style={largeTitleStyle}>
-              <Animated.Text
-                style={[styles.largeTitle, largeTitleScaleStyle]}
-                numberOfLines={1}
+              <View
+                ref={largeTitleMeasureRef}
+                style={titlesHidden && styles.titleHidden}
+                collapsable={false}
               >
-                Projects
-              </Animated.Text>
+                <Animated.Text
+                  style={[styles.largeTitle, largeTitleScaleStyle]}
+                  numberOfLines={1}
+                >
+                  Projects
+                </Animated.Text>
+              </View>
               <View style={styles.largeTitleSpacer} />
             </Animated.View>
           </Animated.View>
@@ -596,6 +789,55 @@ export default function ProjectListScreen() {
           </View>
         </View>
       </Modal>
+
+      <Modal
+        visible={renameTarget !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={() => {
+          if (!renaming) {
+            setRenameTarget(null);
+          }
+        }}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Rename Project</Text>
+            <TextInput
+              style={styles.renameInput}
+              value={renameValue}
+              onChangeText={setRenameValue}
+              placeholder="Project name"
+              placeholderTextColor={theme.textMuted}
+              autoFocus
+              autoCapitalize="words"
+              returnKeyType="done"
+              editable={!renaming}
+              onSubmitEditing={() => {
+                void confirmRenameProject();
+              }}
+            />
+            <View style={styles.modalActions}>
+              <PrimaryButton
+                title="Cancel"
+                variant="secondary"
+                disabled={renaming}
+                onPress={() => setRenameTarget(null)}
+                style={styles.modalButton}
+              />
+              <PrimaryButton
+                title={renaming ? 'Saving...' : 'Save'}
+                loading={renaming}
+                disabled={renaming}
+                onPress={() => {
+                  void confirmRenameProject();
+                }}
+                style={styles.modalButton}
+              />
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -616,13 +858,20 @@ const styles = StyleSheet.create({
     zIndex: 2,
     minHeight: 44,
   },
-  smallTitle: {
+  smallTitleMeasure: {
     position: 'absolute',
     left: theme.spacing.lg,
     right: 120,
+    justifyContent: 'center',
+    minHeight: 44,
+  },
+  smallTitle: {
     color: theme.text,
     fontSize: 17,
     fontWeight: '600',
+  },
+  titleHidden: {
+    opacity: 0,
   },
   listContainer: {
     flex: 1,
@@ -778,5 +1027,14 @@ const styles = StyleSheet.create({
   },
   modalButton: {
     flex: 1,
+  },
+  renameInput: {
+    backgroundColor: theme.card,
+    borderWidth: 1,
+    borderColor: theme.cardBorder,
+    borderRadius: theme.radius.md,
+    padding: theme.spacing.md,
+    color: theme.text,
+    fontSize: 16,
   },
 });

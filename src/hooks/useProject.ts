@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 
+import { rememberProjectName } from '@/data/projectNameCache';
 import { getProjectById } from '@/data/projectStorage';
 import type { Project } from '@/types/project';
 
@@ -17,6 +18,9 @@ export function useProject(projectId: string | undefined) {
     try {
       setLoading(true);
       const result = await getProjectById(projectId);
+      if (result) {
+        rememberProjectName(result.id, result.name);
+      }
       setProject(result);
     } finally {
       setLoading(false);
