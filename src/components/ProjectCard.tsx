@@ -1,5 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
-import { memo, useCallback, useEffect, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Animated,
   Image,
@@ -7,8 +7,16 @@ import {
   StyleSheet,
   Text,
   View,
+  type LayoutChangeEvent,
 } from 'react-native';
+import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Swipeable from 'react-native-gesture-handler/Swipeable';
+import Reanimated, {
+  runOnJS,
+  useAnimatedStyle,
+  useSharedValue,
+  withSpring,
+} from 'react-native-reanimated';
 
 import { getProjectTypeLabel } from '@/constants/projectTypes';
 import { theme } from '@/constants/theme';
@@ -31,6 +39,11 @@ export type ProjectCardProps = {
   /** Called to confirm delete. Invoke `onCancel` if the user dismisses the confirm dialog. */
   onDelete: (onCancel: () => void) => void;
   onSwipeableOpen?: (ref: Swipeable) => void;
+  /** When true, swipe actions are disabled and a drag handle is shown. */
+  editing?: boolean;
+  onDragStart?: (projectId: string) => void;
+  onDragEnd?: (projectId: string, translationY: number, rowHeight: number) => void;
+  onRowLayout?: (projectId: string, height: number) => void;
 };
 
 type RightActionsProps = {
@@ -113,13 +126,26 @@ function ProjectCardComponent({
   onRename,
   onDelete,
   onSwipeableOpen,
+  editing = false,
+  onDragStart,
+  onDragEnd,
+  onRowLayout,
 }: ProjectCardProps) {
   const swipeableRef = useRef<Swipeable | null>(null);
   const fullSwipeArmedRef = useRef(false);
   const deleteTriggeredRef = useRef(false);
   const awaitingDeleteConfirmRef = useRef(false);
   const lastTranslationRef = useRef(0);
+  const rowHeightRef = useRef(96);
   const [swipeEnabled, setSwipeEnabled] = useState(true);
+  const translateY = useSharedValue(0);
+  const dragging = useSharedValue(0);
+
+  useEffect(() => {
+    if (editing) {
+      swipeableRef.current?.close();
+    }
+  }, [editing]);
 
   const close = useCallback(() => {
     swipeableRef.current?.close();
@@ -207,40 +233,59 @@ function ProjectCardComponent({
     [handleDelete, handleRename, onFullSwipeArmedChange, onTranslationChange]
   );
 
-  return (
-    <Swipeable
-      ref={swipeableRef}
-      friction={1}
-      rightThreshold={40}
-      overshootRight
-      overshootFriction={1}
-      enabled={swipeEnabled}
-      // JS-driven so drag listeners can arm full-swipe delete; avoids ReanimatedSwipeable scroll jank.
-      useNativeAnimations={false}
-      containerStyle={styles.swipeRoot}
-      onSwipeableOpen={(direction, swipeable) => {
-        if (awaitingDeleteConfirmRef.current) {
-          // Gesture release can fight the close animation — keep gliding shut.
-          glideClosed();
-          return;
-        }
-        // Legacy Swipeable reports which side opened: right actions => 'right'.
-        if (direction === 'right' || direction === 'left') {
-          onSwipeableOpen?.(swipeable);
-        }
-        if (fullSwipeArmedRef.current) {
-          triggerDelete();
-        }
-      }}
-      onSwipeableClose={() => {
-        fullSwipeArmedRef.current = false;
-        if (!awaitingDeleteConfirmRef.current) {
-          deleteTriggeredRef.current = false;
-        }
-      }}
-      renderRightActions={renderRightActions}
-    >
-      <Pressable style={styles.card} onPress={onPress}>
+  const notifyDragStart = useCallback(() => {
+    onDragStart?.(project.id);
+  }, [onDragStart, project.id]);
+
+  const notifyDragEnd = useCallback(
+    (translationYValue: number) => {
+      onDragEnd?.(project.id, translationYValue, rowHeightRef.current);
+    },
+    [onDragEnd, project.id]
+  );
+
+  const panGesture = useMemo(
+    () =>
+      Gesture.Pan()
+        .enabled(editing)
+        .activeOffsetY([-4, 4])
+        .onStart(() => {
+          dragging.value = 1;
+          runOnJS(notifyDragStart)();
+        })
+        .onUpdate((event) => {
+          translateY.value = event.translationY;
+        })
+        .onEnd((event) => {
+          runOnJS(notifyDragEnd)(event.translationY);
+          translateY.value = withSpring(0, { damping: 20, stiffness: 200 });
+          dragging.value = 0;
+        })
+        .onFinalize(() => {
+          translateY.value = withSpring(0, { damping: 20, stiffness: 200 });
+          dragging.value = 0;
+        }),
+    [dragging, editing, notifyDragEnd, notifyDragStart, translateY]
+  );
+
+  const cardAnimatedStyle = useAnimatedStyle(() => ({
+    transform: [{ translateY: translateY.value }],
+    zIndex: dragging.value ? 20 : 0,
+    elevation: dragging.value ? 8 : 0,
+  }));
+
+  const handleRowLayout = useCallback(
+    (event: LayoutChangeEvent) => {
+      const height = event.nativeEvent.layout.height;
+      rowHeightRef.current = height;
+      onRowLayout?.(project.id, height);
+    },
+    [onRowLayout, project.id]
+  );
+
+  const cardBody = (
+    <View style={styles.card}>
+      <Pressable style={styles.cardMain} onPress={onPress} disabled={editing}>
         {latestPhotoUri ? (
           <Image source={{ uri: latestPhotoUri }} style={styles.thumbnail} />
         ) : (
@@ -259,13 +304,69 @@ function ProjectCardComponent({
           </Text>
         </View>
       </Pressable>
-    </Swipeable>
+      {editing ? (
+        <GestureDetector gesture={panGesture}>
+          <Reanimated.View
+            accessibilityRole="button"
+            accessibilityLabel="Reorder project"
+            style={styles.dragHandle}
+          >
+            <Ionicons name="reorder-three" size={28} color={theme.textMuted} />
+          </Reanimated.View>
+        </GestureDetector>
+      ) : null}
+    </View>
+  );
+
+  return (
+    <Reanimated.View
+      style={[styles.row, cardAnimatedStyle]}
+      onLayout={handleRowLayout}
+    >
+      <Swipeable
+        ref={swipeableRef}
+        friction={1}
+        rightThreshold={40}
+        overshootRight
+        overshootFriction={1}
+        enabled={swipeEnabled && !editing}
+        // JS-driven so drag listeners can arm full-swipe delete; avoids ReanimatedSwipeable scroll jank.
+        useNativeAnimations={false}
+        containerStyle={styles.swipeRoot}
+        onSwipeableOpen={(direction, swipeable) => {
+          if (awaitingDeleteConfirmRef.current) {
+            // Gesture release can fight the close animation — keep gliding shut.
+            glideClosed();
+            return;
+          }
+          // Legacy Swipeable reports which side opened: right actions => 'right'.
+          if (direction === 'right' || direction === 'left') {
+            onSwipeableOpen?.(swipeable);
+          }
+          if (fullSwipeArmedRef.current) {
+            triggerDelete();
+          }
+        }}
+        onSwipeableClose={() => {
+          fullSwipeArmedRef.current = false;
+          if (!awaitingDeleteConfirmRef.current) {
+            deleteTriggeredRef.current = false;
+          }
+        }}
+        renderRightActions={editing ? undefined : renderRightActions}
+      >
+        {cardBody}
+      </Swipeable>
+    </Reanimated.View>
   );
 }
 
 export const ProjectCard = memo(ProjectCardComponent);
 
 const styles = StyleSheet.create({
+  row: {
+    position: 'relative',
+  },
   swipeRoot: {
     marginBottom: theme.spacing.sm,
   },
@@ -277,6 +378,11 @@ const styles = StyleSheet.create({
     padding: theme.spacing.md,
     borderWidth: 1,
     borderColor: theme.cardBorder,
+  },
+  cardMain: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
   },
   thumbnail: {
     width: 72,
@@ -300,6 +406,13 @@ const styles = StyleSheet.create({
   info: {
     flex: 1,
     marginLeft: theme.spacing.md,
+    marginRight: theme.spacing.sm,
+  },
+  dragHandle: {
+    paddingLeft: theme.spacing.sm,
+    paddingVertical: theme.spacing.sm,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   name: {
     color: theme.text,

@@ -29,6 +29,8 @@ export type Project = {
   type: ProjectType;
   createdAt: string;
   updatedAt: string;
+  /** Lower values appear first in the project list. */
+  sortOrder: number;
   coverPhotoUri?: string;
   lastBackedUpAt?: string;
   reminderSettings?: ProjectReminderSettings;

@@ -1,6 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect, useRouter } from 'expo-router';
-import { memo, useCallback, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -35,13 +35,15 @@ import { rememberProjectName } from '@/data/projectNameCache';
 import { importProjectBackup, validateBackupZip } from '@/data/backupService';
 import { getMetadataHealth } from '@/data/metadataHealth';
 import {
+  getBestRecoverableSnapshot,
   getLatestSnapshotFileHealth,
   hasRecoverableMetadataSnapshot,
-  restoreMetadataFromLatestSnapshot,
+  restoreMetadataFromBestSnapshot,
 } from '@/data/metadataSnapshotService';
 import {
   deleteProject,
   getAllProjects,
+  reorderProjects,
   updateProject,
 } from '@/data/projectStorage';
 import { getStatsForProject } from '@/data/stats';
@@ -62,12 +64,20 @@ const ProjectListRow = memo(function ProjectListRow({
   onRename,
   onDelete,
   onSwipeableOpen,
+  editing,
+  onDragStart,
+  onDragEnd,
+  onRowLayout,
 }: {
   item: ProjectListItem;
   onPress: (item: ProjectListItem) => void;
   onRename: (item: ProjectListItem) => void;
   onDelete: (item: ProjectListItem, onCancel: () => void) => void;
   onSwipeableOpen: (ref: Swipeable) => void;
+  editing: boolean;
+  onDragStart?: (projectId: string) => void;
+  onDragEnd?: (projectId: string, translationY: number, rowHeight: number) => void;
+  onRowLayout?: (projectId: string, height: number) => void;
 }) {
   return (
     <ProjectCard
@@ -79,6 +89,10 @@ const ProjectListRow = memo(function ProjectListRow({
       onRename={() => onRename(item)}
       onDelete={(onCancel) => onDelete(item, onCancel)}
       onSwipeableOpen={onSwipeableOpen}
+      editing={editing}
+      onDragStart={onDragStart}
+      onDragEnd={onDragEnd}
+      onRowLayout={onRowLayout}
     />
   );
 });
@@ -133,9 +147,12 @@ export default function ProjectListScreen() {
   const [renameTarget, setRenameTarget] = useState<ProjectListItem | null>(null);
   const [renameValue, setRenameValue] = useState('');
   const [renaming, setRenaming] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [listScrollEnabled, setListScrollEnabled] = useState(true);
   const hasLoadedRef = useRef(false);
   const contentPassHeightRef = useRef(0);
   const openSwipeableRef = useRef<Swipeable | null>(null);
+  const rowHeightsRef = useRef<Record<string, number>>({});
   const largeTitleMeasureRef = useRef<View>(null);
   const smallTitleMeasureRef = useRef<View>(null);
   const titleModeRef = useRef<'large' | 'small'>('large');
@@ -183,16 +200,39 @@ export default function ProjectListScreen() {
     }
 
     try {
-      const projects = await getAllProjects();
+      let projects = await getAllProjects();
+
+      // If the list was wiped, recover from the best local snapshot automatically.
+      if (projects.length === 0) {
+        const snapshot = await getBestRecoverableSnapshot();
+        if (snapshot && snapshot.projects.length > 0) {
+          try {
+            await restoreMetadataFromBestSnapshot();
+            projects = await getAllProjects();
+          } catch {
+            // Fall through to empty list + recovery card.
+          }
+        }
+      }
+
       const enriched = await Promise.all(
         projects.map(async (project) => {
-          const stats = await getStatsForProject(project.id);
-          return {
-            ...project,
-            totalPhotos: stats.totalPhotos,
-            latestPhotoUri: project.coverPhotoUri,
-            latestPhotoDate: stats.latestPhotoDate ?? undefined,
-          };
+          try {
+            const stats = await getStatsForProject(project.id);
+            return {
+              ...project,
+              totalPhotos: stats.totalPhotos,
+              latestPhotoUri: project.coverPhotoUri,
+              latestPhotoDate: stats.latestPhotoDate ?? undefined,
+            };
+          } catch {
+            return {
+              ...project,
+              totalPhotos: 0,
+              latestPhotoUri: project.coverPhotoUri,
+              latestPhotoDate: undefined,
+            };
+          }
         })
       );
       setItems(enriched);
@@ -209,7 +249,7 @@ export default function ProjectListScreen() {
           metadataHealth.photosCorrupted)
       ) {
         const snapshotInfo = await getLatestSnapshotFileHealth();
-        if (snapshotInfo.createdAt) {
+        if (snapshotInfo.createdAt && snapshotInfo.projectCount > 0) {
           setRecoveryInfo({
             snapshotCreatedAt: snapshotInfo.createdAt,
             projectCount: snapshotInfo.projectCount,
@@ -234,8 +274,17 @@ export default function ProjectListScreen() {
     useCallback(() => {
       resetToIdle();
       void loadItems();
+      return () => {
+        setEditing(false);
+      };
     }, [loadItems, resetToIdle])
   );
+
+  useEffect(() => {
+    if (editing && items.length === 0) {
+      setEditing(false);
+    }
+  }, [editing, items.length]);
 
   const resetImportPreview = () => {
     setPreviewVisible(false);
@@ -301,7 +350,7 @@ export default function ProjectListScreen() {
   const handleRestoreSnapshot = async () => {
     try {
       setRestoringSnapshot(true);
-      await restoreMetadataFromLatestSnapshot();
+      await restoreMetadataFromBestSnapshot();
       setShowRecoveryCard(false);
       await loadItems();
       Alert.alert('Restore complete', 'Metadata restored from local snapshot.');
@@ -390,8 +439,75 @@ export default function ProjectListScreen() {
     openSwipeableRef.current = ref;
   }, []);
 
+  const toggleEditing = useCallback(() => {
+    setEditing((prev) => {
+      const next = !prev;
+      if (next) {
+        openSwipeableRef.current?.close();
+        openSwipeableRef.current = null;
+        setSearchQuery('');
+      }
+      return next;
+    });
+  }, []);
+
+  const handleRowLayout = useCallback((projectId: string, height: number) => {
+    rowHeightsRef.current[projectId] = height;
+  }, []);
+
+  const handleDragStart = useCallback(() => {
+    setListScrollEnabled(false);
+  }, []);
+
+  const handleItemDragEnd = useCallback(
+    async (projectId: string, translationY: number, rowHeight: number) => {
+      setListScrollEnabled(true);
+
+      if (!editing) {
+        return;
+      }
+
+      const fromIndex = items.findIndex((item) => item.id === projectId);
+      if (fromIndex < 0) {
+        return;
+      }
+
+      const measuredHeight = rowHeightsRef.current[projectId] || rowHeight || 96;
+      const delta = Math.round(translationY / measuredHeight);
+      if (delta === 0) {
+        return;
+      }
+
+      const toIndex = Math.max(0, Math.min(items.length - 1, fromIndex + delta));
+      if (toIndex === fromIndex) {
+        return;
+      }
+
+      const previous = items;
+      const next = [...items];
+      const [moved] = next.splice(fromIndex, 1);
+      next.splice(toIndex, 0, moved);
+      setItems(next);
+
+      try {
+        await reorderProjects(next.map((item) => item.id));
+      } catch (error) {
+        setItems(previous);
+        Alert.alert(
+          'Reorder failed',
+          getErrorMessage(error, 'Could not save the new project order.')
+        );
+      }
+    },
+    [editing, items]
+  );
+
   const handleOpenProject = useCallback(
     (item: ProjectListItem) => {
+      if (editing) {
+        return;
+      }
+
       const mode = titleModeRef.current;
       setTitleMode(mode);
       rememberProjectName(item.id, item.name);
@@ -418,6 +534,7 @@ export default function ProjectListScreen() {
       });
     },
     [
+      editing,
       openProject,
       registerLargeLayout,
       registerSmallLayout,
@@ -433,9 +550,22 @@ export default function ProjectListScreen() {
         onRename={handleRenameProject}
         onDelete={handleDeleteProject}
         onSwipeableOpen={handleSwipeableOpen}
+        editing={editing}
+        onDragStart={handleDragStart}
+        onDragEnd={handleItemDragEnd}
+        onRowLayout={handleRowLayout}
       />
     ),
-    [handleDeleteProject, handleOpenProject, handleRenameProject, handleSwipeableOpen]
+    [
+      editing,
+      handleDeleteProject,
+      handleDragStart,
+      handleItemDragEnd,
+      handleOpenProject,
+      handleRenameProject,
+      handleRowLayout,
+      handleSwipeableOpen,
+    ]
   );
 
   const onScroll = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
@@ -576,11 +706,12 @@ export default function ProjectListScreen() {
     };
   });
 
-  const importDisabled = validating || importing;
+  const importDisabled = validating || importing || editing;
   const normalizedQuery = searchQuery.trim().toLowerCase();
-  const filteredItems = normalizedQuery
-    ? items.filter((item) => item.name.toLowerCase().includes(normalizedQuery))
-    : items;
+  const filteredItems =
+    editing || !normalizedQuery
+      ? items
+      : items.filter((item) => item.name.toLowerCase().includes(normalizedQuery));
 
   const listHeader = (
     <View
@@ -664,13 +795,21 @@ export default function ProjectListScreen() {
             )}
           </Pressable>
           <Pressable
-            onPress={() => {}}
+            onPress={toggleEditing}
             hitSlop={10}
             style={styles.editButton}
             accessibilityRole="button"
-            accessibilityLabel="Edit"
+            accessibilityLabel={editing ? 'Done editing' : 'Edit'}
+            disabled={loading || items.length === 0}
           >
-            <Text style={styles.editButtonText}>Edit</Text>
+            <Text
+              style={[
+                styles.editButtonText,
+                (loading || items.length === 0) && styles.editButtonTextDisabled,
+              ]}
+            >
+              {editing ? 'Done' : 'Edit'}
+            </Text>
           </Pressable>
         </View>
       </View>
@@ -694,11 +833,13 @@ export default function ProjectListScreen() {
           scrollIndicatorInsets={{ top: scrollIndicatorTop, bottom: 0 }}
           indicatorStyle="white"
           showsVerticalScrollIndicator
+          scrollEnabled={listScrollEnabled}
           onScroll={onScroll}
           scrollEventThrottle={16}
           ListHeaderComponent={listHeader}
           ListEmptyComponent={listEmpty}
           renderItem={renderProjectItem}
+          extraData={editing}
         />
 
         <Animated.View
@@ -735,6 +876,7 @@ export default function ProjectListScreen() {
                 autoCorrect={false}
                 clearButtonMode="while-editing"
                 returnKeyType="search"
+                editable={!editing}
                 accessibilityLabel="Search projects"
               />
             </Animated.View>
@@ -922,6 +1064,9 @@ const styles = StyleSheet.create({
     color: theme.accent,
     fontSize: 16,
     fontWeight: '600',
+  },
+  editButtonTextDisabled: {
+    color: theme.textMuted,
   },
   searchBar: {
     backgroundColor: theme.card,

@@ -39,6 +39,7 @@ export async function runMigrations(): Promise<void> {
           type: 'selfie',
           createdAt: now,
           updatedAt: now,
+          sortOrder: 0,
           coverPhotoUri: sortedLegacy[0]?.uri,
         };
 

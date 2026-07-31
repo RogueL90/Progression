@@ -25,7 +25,33 @@ function generateId(): string {
 }
 
 function sortProjects(projects: Project[]): Project[] {
-  return [...projects].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  return [...projects].sort((a, b) => a.sortOrder - b.sortOrder);
+}
+
+/** Assign sortOrder from legacy updatedAt order when missing, and persist if needed. */
+async function readProjectsWithSortOrder(): Promise<Project[]> {
+  const projects = await readProjectsRaw();
+  if (projects.length === 0) {
+    return [];
+  }
+
+  const needsMigration = projects.some(
+    (project) => typeof project.sortOrder !== 'number'
+  );
+
+  if (!needsMigration) {
+    return sortProjects(projects);
+  }
+
+  const migrated = [...projects]
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+    .map((project, index) => ({
+      ...project,
+      sortOrder: index,
+    }));
+
+  await writeProjectsRaw(migrated);
+  return migrated;
 }
 
 export function getDefaultReminderSettings(): ProjectReminderSettings {
@@ -41,11 +67,11 @@ export function getDefaultReminderSettings(): ProjectReminderSettings {
 }
 
 export async function getAllProjects(): Promise<Project[]> {
-  return sortProjects(await readProjectsRaw());
+  return readProjectsWithSortOrder();
 }
 
 export async function getProjectById(projectId: string): Promise<Project | null> {
-  const projects = await readProjectsRaw();
+  const projects = await readProjectsWithSortOrder();
   return projects.find((project) => project.id === projectId) ?? null;
 }
 
@@ -61,19 +87,64 @@ export async function createProject(input: {
   await createMetadataSnapshot();
 
   const now = new Date().toISOString();
+  const projects = await readProjectsWithSortOrder();
   const project: Project = {
     id: generateId(),
     name: trimmedName,
     type: input.type,
     createdAt: now,
     updatedAt: now,
+    sortOrder: 0,
     reminderSettings: getDefaultReminderSettings(),
   };
 
-  const projects = await readProjectsRaw();
-  projects.push(project);
-  await writeProjectsRaw(projects);
+  const shifted = projects.map((existing) => ({
+    ...existing,
+    sortOrder: existing.sortOrder + 1,
+  }));
+  await writeProjectsRaw([project, ...shifted]);
   return project;
+}
+
+export async function reorderProjects(orderedIds: string[]): Promise<void> {
+  const projects = await readProjectsWithSortOrder();
+  if (projects.length === 0) {
+    return;
+  }
+
+  // Never persist an empty order over existing projects.
+  if (orderedIds.length === 0) {
+    throw new Error('Cannot reorder with an empty project list.');
+  }
+
+  const byId = new Map(projects.map((project) => [project.id, project]));
+  const reordered: Project[] = [];
+
+  for (const id of orderedIds) {
+    const project = byId.get(id);
+    if (!project) {
+      continue;
+    }
+    reordered.push({
+      ...project,
+      sortOrder: reordered.length,
+    });
+    byId.delete(id);
+  }
+
+  if (reordered.length === 0) {
+    throw new Error('Cannot reorder: none of the given project ids were found.');
+  }
+
+  for (const project of byId.values()) {
+    reordered.push({
+      ...project,
+      sortOrder: reordered.length,
+    });
+  }
+
+  await createMetadataSnapshot();
+  await writeProjectsRaw(reordered);
 }
 
 export async function updateProject(

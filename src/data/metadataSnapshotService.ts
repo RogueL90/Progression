@@ -191,6 +191,11 @@ async function createMetadataSnapshotInternal(): Promise<void> {
 
   const [projects, photos] = await Promise.all([readProjectsRaw(), readPhotosRaw()]);
 
+  // Don't overwrite a good recovery snapshot with empty metadata.
+  if (projects.length === 0 && photos.length === 0) {
+    return;
+  }
+
   const snapshot: MetadataSnapshot = {
     app: 'Progression',
     snapshotVersion: 1,
@@ -292,9 +297,43 @@ export async function restoreMetadataFromPreviousSnapshot(): Promise<void> {
   await restoreMetadataFromSnapshot(await getPreviousMetadataSnapshot());
 }
 
+/** Prefer a snapshot that still has projects (latest or previous). */
+export async function getBestRecoverableSnapshot(): Promise<MetadataSnapshot | null> {
+  const [latest, previous] = await Promise.all([
+    getLatestMetadataSnapshot(),
+    getPreviousMetadataSnapshot(),
+  ]);
+
+  const withProjects = [latest, previous].filter(
+    (snapshot): snapshot is MetadataSnapshot =>
+      Boolean(snapshot && snapshot.projects.length > 0)
+  );
+
+  if (withProjects.length > 0) {
+    return [...withProjects].sort((a, b) => {
+      if (b.projects.length !== a.projects.length) {
+        return b.projects.length - a.projects.length;
+      }
+      return b.createdAt.localeCompare(a.createdAt);
+    })[0];
+  }
+
+  const withPhotos = [latest, previous].filter(
+    (snapshot): snapshot is MetadataSnapshot =>
+      Boolean(snapshot && snapshot.photos.length > 0)
+  );
+  return withPhotos[0] ?? null;
+}
+
+export async function restoreMetadataFromBestSnapshot(): Promise<void> {
+  await restoreMetadataFromSnapshot(await getBestRecoverableSnapshot());
+}
+
 export async function hasRecoverableMetadataSnapshot(): Promise<boolean> {
-  const latest = await getLatestMetadataSnapshot();
-  return Boolean(latest && (latest.projects.length > 0 || latest.photos.length > 0));
+  const snapshot = await getBestRecoverableSnapshot();
+  return Boolean(
+    snapshot && (snapshot.projects.length > 0 || snapshot.photos.length > 0)
+  );
 }
 
 export async function getSnapshotStatus(): Promise<{
@@ -318,7 +357,7 @@ export async function getLatestSnapshotFileHealth(): Promise<{
   missingFileCount: number;
   createdAt: string | null;
 }> {
-  const snapshot = await getLatestMetadataSnapshot();
+  const snapshot = await getBestRecoverableSnapshot();
   if (!snapshot) {
     return {
       projectCount: 0,
