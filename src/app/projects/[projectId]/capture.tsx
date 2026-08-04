@@ -1,5 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import { CameraView, useCameraPermissions } from 'expo-camera';
+import * as ImagePicker from 'expo-image-picker';
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Linking, Pressable, StyleSheet, Text, View } from 'react-native';
@@ -20,8 +21,11 @@ import { useProject } from '@/hooks/useProject';
 import { useTodayPhoto } from '@/hooks/useTodayPhoto';
 import type { ProgressPhoto } from '@/types/photo';
 import type { ProjectType } from '@/types/project';
+import type { FaceMeshOverlay } from '@/types/faceMesh';
 import { formatDisplayDate, getTodayDateString } from '@/utils/date';
 import { getErrorMessage } from '@/utils/errors';
+
+type FlashMode = 'off' | 'on' | 'auto';
 
 /**
  * Lazily load Vision Camera face capture only when face mesh is enabled.
@@ -34,6 +38,54 @@ const FaceMeshCaptureView = FACE_MESH_ENABLED
 
 function getCameraFacing(type: ProjectType): 'front' | 'back' {
   return type === 'selfie' || type === 'side_profile' ? 'front' : 'back';
+}
+
+function getFlashIcon(mode: FlashMode): keyof typeof Ionicons.glyphMap {
+  if (mode === 'on') return 'flash';
+  if (mode === 'auto') return 'flash-outline';
+  return 'flash-off-outline';
+}
+
+function getFlashLabel(mode: FlashMode): string {
+  if (mode === 'on') return 'Flash on';
+  if (mode === 'auto') return 'Flash auto';
+  return 'Flash off';
+}
+
+async function detectFaceMeshFromImage(
+  uri: string,
+  imageWidth: number,
+  imageHeight: number
+): Promise<FaceMeshOverlay | null> {
+  if (!FACE_MESH_ENABLED) return null;
+
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { detectFaces } = require('react-native-vision-camera-face-detector');
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { buildFaceMeshOverlayFromDetection } = require('@/data/faceMeshStorage');
+
+    const faces = await detectFaces({
+      image: uri,
+      options: {
+        performanceMode: 'accurate',
+        contourMode: 'all',
+        landmarkMode: 'all',
+      },
+    });
+
+    const face = faces[0];
+    if (!face) return null;
+
+    return buildFaceMeshOverlayFromDetection({
+      imageWidth,
+      imageHeight,
+      contours: face.contours ?? null,
+      landmarks: face.landmarks ? Object.fromEntries(Object.entries(face.landmarks)) : null,
+    });
+  } catch {
+    return null;
+  }
 }
 
 export default function ProjectCaptureScreen() {
@@ -49,12 +101,16 @@ export default function ProjectCaptureScreen() {
   const faceCaptureRef = useRef<FaceMeshCaptureHandle>(null);
   const [permission, requestPermission] = useCameraPermissions();
   const [cameraReady, setCameraReady] = useState(false);
+  const [facing, setFacing] = useState<'front' | 'back'>('back');
+  const [flashMode, setFlashMode] = useState<FlashMode>('off');
   const [saving, setSaving] = useState(false);
   const { hasPhotoToday } = useTodayPhoto(projectId);
 
   const today = getTodayDateString();
   const isFaceProject = project ? isFaceProjectType(project.type) : false;
   const useFaceMeshCapture = FACE_MESH_ENABLED && isFaceProject && FaceMeshCaptureView !== null;
+  const canUseCamera = permission?.granted ?? false;
+  const showFlashControl = canUseCamera;
 
   const refreshLatestPhoto = useCallback(async () => {
     if (!projectId) {
@@ -76,11 +132,48 @@ export default function ProjectCaptureScreen() {
   );
 
   useEffect(() => {
+    if (project) {
+      setFacing(getCameraFacing(project.type));
+    }
+  }, [project?.id, project?.type]);
+
+  useEffect(() => {
     setCameraReady(false);
-  }, [settings.showFaceMesh, useFaceMeshCapture]);
+  }, [settings.showFaceMesh, useFaceMeshCapture, facing]);
+
+  const flipCamera = useCallback(() => {
+    setFacing((prev) => (prev === 'front' ? 'back' : 'front'));
+  }, []);
+
+  const cycleFlash = useCallback(() => {
+    setFlashMode((prev) => {
+      if (prev === 'off') return 'on';
+      if (prev === 'on') return 'auto';
+      return 'off';
+    });
+  }, []);
+
+  const saveProgressPhoto = useCallback(
+    async (uri: string, faceMesh: FaceMeshOverlay | null = null) => {
+      if (!projectId || !project) return;
+
+      try {
+        setSaving(true);
+        await replacePhotoForDate(projectId, today, uri, faceMesh);
+        router.back();
+      } catch (error) {
+        setSaving(false);
+        Alert.alert(
+          'Could not save photo',
+          getErrorMessage(error, 'Something went wrong while saving this photo.')
+        );
+      }
+    },
+    [projectId, project, today, router]
+  );
 
   const handleCapture = useCallback(async () => {
-    if (!cameraReady || saving || !projectId || !project) return;
+    if (!canUseCamera || !cameraReady || saving || !projectId || !project) return;
 
     try {
       setSaving(true);
@@ -112,7 +205,57 @@ export default function ProjectCaptureScreen() {
         getErrorMessage(error, 'Something went wrong while saving this photo.')
       );
     }
-  }, [cameraReady, saving, projectId, project, today, router, useFaceMeshCapture]);
+  }, [
+    canUseCamera,
+    cameraReady,
+    saving,
+    projectId,
+    project,
+    today,
+    router,
+    useFaceMeshCapture,
+  ]);
+
+  const handlePickPhoto = useCallback(async () => {
+    if (saving || !projectId || !project) return;
+
+    const libraryPermission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!libraryPermission.granted) {
+      if (libraryPermission.canAskAgain === false) {
+        Alert.alert(
+          'Photo library access denied',
+          'Enable photo library access in system settings to upload progress photos.',
+          [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Open Settings', onPress: () => void Linking.openSettings() },
+          ]
+        );
+      } else {
+        Alert.alert(
+          'Photo library access required',
+          'Allow access to your photo library to upload a progress photo.'
+        );
+      }
+      return;
+    }
+
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['images'],
+      quality: 0.85,
+      allowsEditing: false,
+    });
+
+    if (result.canceled || !result.assets[0]?.uri) return;
+
+    const asset = result.assets[0];
+    let faceMesh: FaceMeshOverlay | null = null;
+
+    if (useFaceMeshCapture && asset.width && asset.height) {
+      faceMesh = await detectFaceMeshFromImage(asset.uri, asset.width, asset.height);
+    }
+
+    await saveProgressPhoto(asset.uri, faceMesh);
+  }, [saving, projectId, project, useFaceMeshCapture, saveProgressPhoto]);
 
   const handleRequestPermission = useCallback(async () => {
     const result = await requestPermission();
@@ -156,52 +299,62 @@ export default function ProjectCaptureScreen() {
     );
   }
 
-  if (!permission.granted) {
-    return (
-      <View style={styles.centered}>
-        <Text style={styles.message}>
-          Camera access is required to capture progress photos.
-        </Text>
-        <Text style={styles.submessage}>
-          Your photos are stored only on this device and never uploaded.
-        </Text>
-        <PrimaryButton title="Grant Camera Access" onPress={handleRequestPermission} />
-        <PrimaryButton
-          title="Go Back"
-          variant="secondary"
-          onPress={() => router.back()}
-          style={styles.backButton}
-        />
-      </View>
-    );
-  }
-
   return (
     <View style={styles.container}>
-      {isFocused && useFaceMeshCapture && FaceMeshCaptureView ? (
+      {canUseCamera && isFocused && useFaceMeshCapture && FaceMeshCaptureView ? (
         <FaceMeshCaptureView
           ref={faceCaptureRef}
-          facing={getCameraFacing(project.type)}
+          facing={facing}
+          flash={flashMode}
           isActive={isFocused}
           showFaceMesh={settings.showFaceMesh}
           onCameraReadyChange={setCameraReady}
         />
       ) : null}
 
-      {isFocused && !useFaceMeshCapture ? (
+      {canUseCamera && isFocused && !useFaceMeshCapture ? (
         <CameraView
           ref={cameraRef}
           style={styles.camera}
-          facing={getCameraFacing(project.type)}
+          facing={facing}
+          flash={flashMode}
           onCameraReady={() => setCameraReady(true)}
         />
       ) : null}
 
+      {!canUseCamera && (
+        <View style={styles.cameraPlaceholder}>
+          <Text style={styles.placeholderTitle}>Camera access needed</Text>
+          <Text style={styles.placeholderMessage}>
+            Grant camera access to take photos, or upload one from your library below.
+          </Text>
+          <PrimaryButton title="Grant Camera Access" onPress={handleRequestPermission} />
+        </View>
+      )}
+
       {showGhost && <CaptureGhostOverlay uri={latestPhoto.uri} />}
 
-      {settings.showGrid && <CaptureGridOverlay density={settings.gridDensity} />}
+      {settings.showGrid && canUseCamera && <CaptureGridOverlay density={settings.gridDensity} />}
 
-      <View style={styles.topOverlay}>
+      <View style={[styles.topOverlay, { paddingTop: insets.top + 4, paddingHorizontal: theme.spacing.md }]}>
+        {showFlashControl && (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={getFlashLabel(flashMode)}
+            onPress={cycleFlash}
+            disabled={saving}
+            style={({ pressed }) => [
+              styles.topControlButton,
+              styles.flashButton,
+              styles.flashButtonPosition,
+              { top: insets.top + 4 },
+              pressed && styles.settingsPressed,
+            ]}
+          >
+            <Ionicons name={getFlashIcon(flashMode)} size={24} color={theme.text} />
+            {flashMode === 'auto' && <Text style={styles.flashAutoLabel}>A</Text>}
+          </Pressable>
+        )}
         <Text style={styles.projectName}>{project.name}</Text>
         <Text style={styles.dateLabel}>{formatDisplayDate(today)}</Text>
         {hasPhotoToday && (
@@ -215,11 +368,34 @@ export default function ProjectCaptureScreen() {
 
       <View style={[styles.bottomControls, { paddingBottom: Math.max(insets.bottom, 16) }]}>
         <View style={styles.controlsRow}>
-          <View style={styles.sideSlot} />
+          <View style={[styles.sideSlot, styles.sideSlotLeft]}>
+            <View style={styles.sideActions}>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Upload photo"
+                onPress={handlePickPhoto}
+                disabled={saving}
+                style={({ pressed }) => [styles.settingsButton, pressed && styles.settingsPressed]}
+              >
+                <Ionicons name="images-outline" size={24} color={theme.text} />
+              </Pressable>
+              {canUseCamera && (
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Flip camera"
+                  onPress={flipCamera}
+                  disabled={saving}
+                  style={({ pressed }) => [styles.settingsButton, pressed && styles.settingsPressed]}
+                >
+                  <Ionicons name="camera-reverse-outline" size={24} color={theme.text} />
+                </Pressable>
+              )}
+            </View>
+          </View>
           <CaptureShutterButton
             onPress={handleCapture}
             loading={saving}
-            disabled={!cameraReady}
+            disabled={!canUseCamera || !cameraReady}
           />
           <View style={styles.sideSlot}>
             <Pressable
@@ -256,6 +432,27 @@ const styles = StyleSheet.create({
   camera: {
     flex: 1,
   },
+  cameraPlaceholder: {
+    flex: 1,
+    backgroundColor: theme.background,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: theme.spacing.lg,
+    gap: theme.spacing.md,
+  },
+  placeholderTitle: {
+    color: theme.text,
+    fontSize: 18,
+    fontWeight: '600',
+    textAlign: 'center',
+  },
+  placeholderMessage: {
+    color: theme.textMuted,
+    fontSize: 15,
+    textAlign: 'center',
+    lineHeight: 22,
+    marginBottom: theme.spacing.sm,
+  },
   centered: {
     flex: 1,
     backgroundColor: theme.background,
@@ -286,8 +483,30 @@ const styles = StyleSheet.create({
     top: 0,
     left: 0,
     right: 0,
-    padding: theme.spacing.lg,
-    paddingTop: theme.spacing.md,
+    alignItems: 'center',
+  },
+  flashButtonPosition: {
+    position: 'absolute',
+    right: theme.spacing.md,
+    zIndex: 1,
+  },
+  topControlButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(0, 0, 0, 0.45)',
+  },
+  flashButton: {
+    flexDirection: 'row',
+    gap: 2,
+  },
+  flashAutoLabel: {
+    color: theme.text,
+    fontSize: 10,
+    fontWeight: '700',
+    marginTop: 2,
   },
   projectName: {
     color: theme.text,
@@ -344,6 +563,13 @@ const styles = StyleSheet.create({
     alignItems: 'flex-end',
     justifyContent: 'center',
     minHeight: 72,
+  },
+  sideSlotLeft: {
+    alignItems: 'flex-start',
+  },
+  sideActions: {
+    flexDirection: 'row',
+    gap: theme.spacing.sm,
   },
   settingsButton: {
     width: 44,

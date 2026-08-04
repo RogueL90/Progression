@@ -15,7 +15,7 @@ import Reanimated, {
   runOnJS,
   useAnimatedStyle,
   useSharedValue,
-  withSpring,
+  withTiming,
 } from 'react-native-reanimated';
 
 import { getProjectTypeLabel } from '@/constants/projectTypes';
@@ -41,7 +41,12 @@ export type ProjectCardProps = {
   onSwipeableOpen?: (ref: Swipeable) => void;
   /** When true, swipe actions are disabled and a drag handle is shown. */
   editing?: boolean;
+  /** True while this card is the one being dragged. */
+  dragging?: boolean;
+  /** Vertical shift applied to make room while another card is dragged. */
+  slotShiftY?: number;
   onDragStart?: (projectId: string) => void;
+  onDragMove?: (projectId: string, translationY: number, rowHeight: number) => void;
   onDragEnd?: (projectId: string, translationY: number, rowHeight: number) => void;
   onRowLayout?: (projectId: string, height: number) => void;
 };
@@ -127,7 +132,10 @@ function ProjectCardComponent({
   onDelete,
   onSwipeableOpen,
   editing = false,
+  dragging = false,
+  slotShiftY = 0,
   onDragStart,
+  onDragMove,
   onDragEnd,
   onRowLayout,
 }: ProjectCardProps) {
@@ -139,13 +147,35 @@ function ProjectCardComponent({
   const rowHeightRef = useRef(96);
   const [swipeEnabled, setSwipeEnabled] = useState(true);
   const translateY = useSharedValue(0);
-  const dragging = useSharedValue(0);
+  const slotShift = useSharedValue(0);
+  const draggingSV = useSharedValue(0);
 
   useEffect(() => {
     if (editing) {
       swipeableRef.current?.close();
     }
   }, [editing]);
+
+  useEffect(() => {
+    if (dragging) {
+      slotShift.value = 0;
+      return;
+    }
+    // Animate while another card is mid-drag; snap instantly on drop so it
+    // doesn't fight the list reorder.
+    if (slotShiftY === 0) {
+      slotShift.value = 0;
+    } else {
+      slotShift.value = withTiming(slotShiftY, { duration: 120 });
+    }
+  }, [dragging, slotShift, slotShiftY]);
+
+  useEffect(() => {
+    if (!dragging) {
+      translateY.value = 0;
+      draggingSV.value = 0;
+    }
+  }, [dragging, draggingSV, translateY]);
 
   const close = useCallback(() => {
     swipeableRef.current?.close();
@@ -237,6 +267,13 @@ function ProjectCardComponent({
     onDragStart?.(project.id);
   }, [onDragStart, project.id]);
 
+  const notifyDragMove = useCallback(
+    (translationYValue: number) => {
+      onDragMove?.(project.id, translationYValue, rowHeightRef.current);
+    },
+    [onDragMove, project.id]
+  );
+
   const notifyDragEnd = useCallback(
     (translationYValue: number) => {
       onDragEnd?.(project.id, translationYValue, rowHeightRef.current);
@@ -250,28 +287,30 @@ function ProjectCardComponent({
         .enabled(editing)
         .activeOffsetY([-4, 4])
         .onStart(() => {
-          dragging.value = 1;
+          draggingSV.value = 1;
           runOnJS(notifyDragStart)();
         })
         .onUpdate((event) => {
           translateY.value = event.translationY;
+          runOnJS(notifyDragMove)(event.translationY);
         })
         .onEnd((event) => {
+          // Snap immediately — list order already matches the drop slot.
+          translateY.value = 0;
+          draggingSV.value = 0;
           runOnJS(notifyDragEnd)(event.translationY);
-          translateY.value = withSpring(0, { damping: 20, stiffness: 200 });
-          dragging.value = 0;
         })
         .onFinalize(() => {
-          translateY.value = withSpring(0, { damping: 20, stiffness: 200 });
-          dragging.value = 0;
+          translateY.value = 0;
+          draggingSV.value = 0;
         }),
-    [dragging, editing, notifyDragEnd, notifyDragStart, translateY]
+    [draggingSV, editing, notifyDragEnd, notifyDragMove, notifyDragStart, translateY]
   );
 
   const cardAnimatedStyle = useAnimatedStyle(() => ({
-    transform: [{ translateY: translateY.value }],
-    zIndex: dragging.value ? 20 : 0,
-    elevation: dragging.value ? 8 : 0,
+    transform: [{ translateY: translateY.value + slotShift.value }],
+    zIndex: draggingSV.value ? 20 : 0,
+    elevation: draggingSV.value ? 8 : 0,
   }));
 
   const handleRowLayout = useCallback(

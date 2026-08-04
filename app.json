@@ -15,7 +15,8 @@
       "deploymentTarget": "15.5",
       "infoPlist": {
         "NSCameraUsageDescription": "Progression needs camera access to capture progress photos. Photos are stored only on this device.",
-        "NSPhotoLibraryAddUsageDescription": "Progression needs permission to save your timelapse to Photos."
+        "NSPhotoLibraryAddUsageDescription": "Progression needs permission to save your timelapse to Photos.",
+        "NSPhotoLibraryUsageDescription": "Progression needs photo library access so you can choose progress photos to upload."
       },
       "bundleIdentifier": "com.anonymous.progression"
     },
@@ -43,6 +44,12 @@
         "expo-camera",
         {
           "cameraPermission": "Progression needs camera access to capture progress photos. Photos are stored only on this device."
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Progression needs photo library access so you can choose progress photos to upload."
         }
       ],
       [

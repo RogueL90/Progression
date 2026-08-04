@@ -65,7 +65,10 @@ const ProjectListRow = memo(function ProjectListRow({
   onDelete,
   onSwipeableOpen,
   editing,
+  dragging,
+  slotShiftY,
   onDragStart,
+  onDragMove,
   onDragEnd,
   onRowLayout,
 }: {
@@ -75,7 +78,10 @@ const ProjectListRow = memo(function ProjectListRow({
   onDelete: (item: ProjectListItem, onCancel: () => void) => void;
   onSwipeableOpen: (ref: Swipeable) => void;
   editing: boolean;
+  dragging?: boolean;
+  slotShiftY?: number;
   onDragStart?: (projectId: string) => void;
+  onDragMove?: (projectId: string, translationY: number, rowHeight: number) => void;
   onDragEnd?: (projectId: string, translationY: number, rowHeight: number) => void;
   onRowLayout?: (projectId: string, height: number) => void;
 }) {
@@ -90,12 +96,38 @@ const ProjectListRow = memo(function ProjectListRow({
       onDelete={(onCancel) => onDelete(item, onCancel)}
       onSwipeableOpen={onSwipeableOpen}
       editing={editing}
+      dragging={dragging}
+      slotShiftY={slotShiftY}
       onDragStart={onDragStart}
+      onDragMove={onDragMove}
       onDragEnd={onDragEnd}
       onRowLayout={onRowLayout}
     />
   );
 });
+
+function getSlotShiftY(
+  index: number,
+  dragStartIndex: number | null,
+  hoverIndex: number | null,
+  rowHeight: number
+): number {
+  if (dragStartIndex === null || hoverIndex === null || dragStartIndex === hoverIndex) {
+    return 0;
+  }
+
+  if (dragStartIndex < hoverIndex) {
+    // Dragging down: rows between start and hover move up to fill the gap.
+    if (index > dragStartIndex && index <= hoverIndex) {
+      return -rowHeight;
+    }
+  } else if (index >= hoverIndex && index < dragStartIndex) {
+    // Dragging up: rows between hover and start move down.
+    return rowHeight;
+  }
+
+  return 0;
+}
 
 type RecoveryInfo = {
   snapshotCreatedAt: string;
@@ -149,16 +181,24 @@ export default function ProjectListScreen() {
   const [renaming, setRenaming] = useState(false);
   const [editing, setEditing] = useState(false);
   const [listScrollEnabled, setListScrollEnabled] = useState(true);
+  const [draggingId, setDraggingId] = useState<string | null>(null);
+  const [dragStartIndex, setDragStartIndex] = useState<number | null>(null);
+  const [hoverIndex, setHoverIndex] = useState<number | null>(null);
   const hasLoadedRef = useRef(false);
   const contentPassHeightRef = useRef(0);
   const openSwipeableRef = useRef<Swipeable | null>(null);
   const rowHeightsRef = useRef<Record<string, number>>({});
+  const dragStartIndexRef = useRef(-1);
+  const hoverIndexRef = useRef(-1);
+  const itemsRef = useRef<ProjectListItem[]>([]);
   const largeTitleMeasureRef = useRef<View>(null);
   const smallTitleMeasureRef = useRef<View>(null);
   const titleModeRef = useRef<'large' | 'small'>('large');
   const scrollY = useSharedValue(0);
   /** List content below the search can scroll this far before search starts collapsing. */
   const contentScrollBeforeSearch = useSharedValue(0);
+
+  itemsRef.current = items;
 
   const updateScrollIndicatorInset = useCallback((offsetY: number, contentPass: number) => {
     if (offsetY < 0) {
@@ -439,6 +479,19 @@ export default function ProjectListScreen() {
     openSwipeableRef.current = ref;
   }, []);
 
+  const handleRowLayout = useCallback((projectId: string, height: number) => {
+    rowHeightsRef.current[projectId] = height;
+  }, []);
+
+  const clearDragState = useCallback(() => {
+    setDraggingId(null);
+    setDragStartIndex(null);
+    setHoverIndex(null);
+    dragStartIndexRef.current = -1;
+    hoverIndexRef.current = -1;
+    setListScrollEnabled(true);
+  }, []);
+
   const toggleEditing = useCallback(() => {
     setEditing((prev) => {
       const next = !prev;
@@ -446,45 +499,69 @@ export default function ProjectListScreen() {
         openSwipeableRef.current?.close();
         openSwipeableRef.current = null;
         setSearchQuery('');
+      } else {
+        clearDragState();
       }
       return next;
     });
-  }, []);
+  }, [clearDragState]);
 
-  const handleRowLayout = useCallback((projectId: string, height: number) => {
-    rowHeightsRef.current[projectId] = height;
-  }, []);
-
-  const handleDragStart = useCallback(() => {
+  const handleDragStart = useCallback((projectId: string) => {
+    const index = itemsRef.current.findIndex((item) => item.id === projectId);
+    if (index < 0) {
+      return;
+    }
+    dragStartIndexRef.current = index;
+    hoverIndexRef.current = index;
+    setDraggingId(projectId);
+    setDragStartIndex(index);
+    setHoverIndex(index);
     setListScrollEnabled(false);
   }, []);
 
-  const handleItemDragEnd = useCallback(
-    async (projectId: string, translationY: number, rowHeight: number) => {
-      setListScrollEnabled(true);
-
-      if (!editing) {
-        return;
-      }
-
-      const fromIndex = items.findIndex((item) => item.id === projectId);
-      if (fromIndex < 0) {
+  const handleDragMove = useCallback(
+    (projectId: string, translationY: number, rowHeight: number) => {
+      const startIndex = dragStartIndexRef.current;
+      if (startIndex < 0) {
         return;
       }
 
       const measuredHeight = rowHeightsRef.current[projectId] || rowHeight || 96;
-      const delta = Math.round(translationY / measuredHeight);
-      if (delta === 0) {
+      const targetIndex = Math.max(
+        0,
+        Math.min(
+          itemsRef.current.length - 1,
+          startIndex + Math.round(translationY / measuredHeight)
+        )
+      );
+
+      if (targetIndex !== hoverIndexRef.current) {
+        hoverIndexRef.current = targetIndex;
+        setHoverIndex(targetIndex);
+      }
+    },
+    []
+  );
+
+  const handleItemDragEnd = useCallback(
+    async (projectId: string, _translationY: number, _rowHeight: number) => {
+      const fromIndex = dragStartIndexRef.current;
+      const toIndex = hoverIndexRef.current;
+      clearDragState();
+
+      if (!editing || fromIndex < 0 || toIndex < 0 || fromIndex === toIndex) {
         return;
       }
 
-      const toIndex = Math.max(0, Math.min(items.length - 1, fromIndex + delta));
-      if (toIndex === fromIndex) {
+      const previous = itemsRef.current;
+      if (
+        fromIndex >= previous.length ||
+        previous[fromIndex]?.id !== projectId
+      ) {
         return;
       }
 
-      const previous = items;
-      const next = [...items];
+      const next = [...previous];
       const [moved] = next.splice(fromIndex, 1);
       next.splice(toIndex, 0, moved);
       setItems(next);
@@ -499,7 +576,7 @@ export default function ProjectListScreen() {
         );
       }
     },
-    [editing, items]
+    [clearDragState, editing]
   );
 
   const handleOpenProject = useCallback(
@@ -542,8 +619,11 @@ export default function ProjectListScreen() {
     ]
   );
 
+  const dragRowHeight =
+    (draggingId ? rowHeightsRef.current[draggingId] : undefined) ?? 96;
+
   const renderProjectItem = useCallback<ListRenderItem<ProjectListItem>>(
-    ({ item }) => (
+    ({ item, index }) => (
       <ProjectListRow
         item={item}
         onPress={handleOpenProject}
@@ -551,20 +631,32 @@ export default function ProjectListScreen() {
         onDelete={handleDeleteProject}
         onSwipeableOpen={handleSwipeableOpen}
         editing={editing}
+        dragging={item.id === draggingId}
+        slotShiftY={
+          item.id === draggingId
+            ? 0
+            : getSlotShiftY(index, dragStartIndex, hoverIndex, dragRowHeight)
+        }
         onDragStart={handleDragStart}
+        onDragMove={handleDragMove}
         onDragEnd={handleItemDragEnd}
         onRowLayout={handleRowLayout}
       />
     ),
     [
+      dragRowHeight,
+      dragStartIndex,
+      draggingId,
       editing,
       handleDeleteProject,
+      handleDragMove,
       handleDragStart,
       handleItemDragEnd,
       handleOpenProject,
       handleRenameProject,
       handleRowLayout,
       handleSwipeableOpen,
+      hoverIndex,
     ]
   );
 
@@ -839,7 +931,7 @@ export default function ProjectListScreen() {
           ListHeaderComponent={listHeader}
           ListEmptyComponent={listEmpty}
           renderItem={renderProjectItem}
-          extraData={editing}
+          extraData={`${editing}:${draggingId}:${dragStartIndex}:${hoverIndex}`}
         />
 
         <Animated.View

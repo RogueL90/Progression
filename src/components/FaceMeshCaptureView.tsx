@@ -30,6 +30,7 @@ export type FaceMeshCaptureHandle = {
 
 type FaceMeshCaptureViewProps = {
   facing: 'front' | 'back';
+  flash?: 'off' | 'on' | 'auto';
   isActive: boolean;
   showFaceMesh: boolean;
   onCameraReadyChange?: (ready: boolean) => void;
@@ -54,7 +55,7 @@ function toLandmarkPoints(landmarks: Landmarks | undefined): FaceMeshPoint[] {
 
 export const FaceMeshCaptureView = forwardRef<FaceMeshCaptureHandle, FaceMeshCaptureViewProps>(
   function FaceMeshCaptureView(
-    { facing, isActive, showFaceMesh, onCameraReadyChange },
+    { facing, flash = 'off', isActive, showFaceMesh, onCameraReadyChange },
     ref
   ) {
     const { width, height } = useWindowDimensions();
@@ -92,7 +93,7 @@ export const FaceMeshCaptureView = forwardRef<FaceMeshCaptureHandle, FaceMeshCap
           }
 
           const photo = await camera.takePhoto({
-            flash: 'off',
+            flash,
             enableShutterSound: false,
           });
 
@@ -127,8 +128,10 @@ export const FaceMeshCaptureView = forwardRef<FaceMeshCaptureHandle, FaceMeshCap
           return { uri, faceMesh };
         },
       }),
-      []
+      [flash]
     );
+
+    const torchEnabled = flash === 'on' && facing === 'back' && device?.hasTorch;
 
     if (!hasPermission || !device) {
       return <View style={styles.camera} />;
@@ -139,6 +142,7 @@ export const FaceMeshCaptureView = forwardRef<FaceMeshCaptureHandle, FaceMeshCap
       device,
       isActive,
       photo: true as const,
+      torch: torchEnabled ? ('on' as const) : ('off' as const),
       onInitialized: () => onCameraReadyChange?.(true),
       onError: () => onCameraReadyChange?.(false),
     };
